@@ -1,0 +1,9 @@
+{
+  "name": "お絵かきツール",
+  "short_name": "お絵かき",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#2b2b2b",
+  "theme_color": "#2b2b2b",
+  "icons": [{ "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

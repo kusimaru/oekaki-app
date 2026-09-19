@@ -1,0 +1,78 @@
+:root {
+  --bg: #2b2b2b;
+  --panel: #363636;
+  --panel-border: #1f1f1f;
+  --text: #e6e6e6;
+  --muted: #9a9a9a;
+  --accent: #f5c542;
+  --btn: #474747;
+  --btn-hover: #555;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; -webkit-user-select: none; user-select: none; }
+#app {
+  display: grid;
+  grid-template-columns: 52px 1fr 240px;
+  grid-template-rows: 44px 1fr;
+  grid-template-areas: "top top top" "tools view side";
+  height: 100dvh;
+  padding-top: env(safe-area-inset-top);
+}
+#topbar { grid-area: top; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 8px; background: var(--panel); border-bottom: 1px solid var(--panel-border); overflow-x: auto; }
+#topbar .group { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.sep { width: 1px; height: 22px; background: var(--panel-border); margin: 0 4px; }
+button { background: var(--btn); color: var(--text); border: 1px solid var(--panel-border); border-radius: 6px; padding: 5px 9px; cursor: pointer; font: inherit; touch-action: manipulation; }
+button:hover { background: var(--btn-hover); }
+button:disabled { opacity: .4; cursor: default; }
+button.active { background: var(--accent); color: #222; border-color: var(--accent); }
+#toolbar { grid-area: tools; display: flex; flex-direction: column; gap: 2px; padding: 6px 4px; background: #2e2e2e; border-right: 1px solid var(--panel-border); overflow-y: auto; }
+#toolbar button { width: 42px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; background: transparent; border-color: transparent; color: #d8d8d8; cursor: grab; position: relative; }
+#toolbar button svg { width: 22px; height: 22px; pointer-events: none; }
+#toolbar button:hover { background: #3f3f3f; }
+#toolbar button.active { background: #505050; border-color: #6a6a6a; color: #fff; }
+#toolbar button.dragging { opacity: .35; }
+#toolbar button.drop-before::before, #toolbar button.drop-after::after { content: ""; position: absolute; left: 4px; right: 4px; height: 2px; background: var(--accent); border-radius: 1px; }
+#toolbar button.drop-before::before { top: -2px; }
+#toolbar button.drop-after::after { bottom: -2px; }
+#viewport { grid-area: view; position: relative; overflow: hidden; background: #1e1e1e; }
+#view { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+#sidebar { grid-area: side; background: var(--panel); border-left: 1px solid var(--panel-border); overflow-y: auto; display: flex; flex-direction: column; }
+#sidebar section { padding: 8px 10px; border-bottom: 1px solid var(--panel-border); }
+#sidebar h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
+.row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+.row label { color: var(--muted); min-width: 44px; }
+.row input[type=range] { flex: 1; min-width: 0; }
+.row input[type=number] { width: 64px; }
+input, select { font: inherit; background: #222; color: var(--text); border: 1px solid var(--panel-border); border-radius: 4px; padding: 3px 5px; }
+#current-color { width: 36px; height: 36px; border-radius: 6px; border: 2px solid #fff; background-image: linear-gradient(45deg,#777 25%,transparent 25%,transparent 75%,#777 75%),linear-gradient(45deg,#777 25%,transparent 25%,transparent 75%,#777 75%); background-size: 10px 10px; background-position: 0 0,5px 5px; position: relative; overflow: hidden; }
+#current-color::after { content: ""; position: absolute; inset: 0; background: var(--c, #000); }
+#palette { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-top: 6px; }
+.swatch { position: relative; aspect-ratio: 1; border-radius: 4px; border: 1px solid #111; cursor: pointer; background-image: linear-gradient(45deg,#777 25%,transparent 25%,transparent 75%,#777 75%),linear-gradient(45deg,#777 25%,transparent 25%,transparent 75%,#777 75%); background-size: 8px 8px; background-position: 0 0,4px 4px; overflow: hidden; }
+.swatch::after { content: ""; position: absolute; inset: 0; background: var(--c); }
+.swatch.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+.swatch .del { position: absolute; top: -2px; right: 0; z-index: 1; font-size: 10px; line-height: 1; padding: 1px 3px; border-radius: 0 0 0 4px; background: rgba(0,0,0,.6); color: #fff; display: none; }
+.swatch:hover .del { display: block; }
+#layers { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
+.layer { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 6px; background: #2f2f2f; border: 1px solid transparent; cursor: pointer; }
+.layer.active { border-color: var(--accent); background: #3d3a2c; }
+.layer .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer input[type=range] { width: 70px; }
+.layer .thumb { width: 32px; height: 24px; background: #fff; border: 1px solid #111; image-rendering: pixelated; flex: none; }
+.layer-buttons { display: flex; gap: 4px; flex-wrap: wrap; }
+.layer-buttons button { padding: 4px 8px; }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--panel-border); border-radius: 10px; padding: 16px 18px; min-width: 300px; max-width: 92vw; }
+dialog::backdrop { background: rgba(0,0,0,.5); }
+dialog h2 { margin: 0 0 10px; font-size: 15px; }
+dialog .row label { min-width: 90px; }
+dialog .actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
+dialog p.note { color: var(--muted); font-size: 12px; margin: 6px 0; }
+#sync-status { color: var(--muted); font-size: 12px; }
+#sync-status.err { color: #ff7b7b; }
+#sync-status.ok { color: #8fd18f; }
+#doc-info { color: var(--muted); font-size: 12px; }
+kbd { background: #222; border-radius: 3px; padding: 0 4px; font-size: 11px; color: var(--muted); }
+@media (max-width: 800px) {
+  #app { grid-template-columns: 46px 1fr 200px; }
+  #toolbar button { width: 38px; height: 34px; font-size: 15px; }
+}
