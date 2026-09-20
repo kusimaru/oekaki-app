@@ -281,13 +281,13 @@ view.addEventListener('pointermove', ev => {
   } else if (mode === 'draw' && ev.pointerId === drawId) {
     const events = typeof ev.getCoalescedEvents === 'function' && ev.getCoalescedEvents().length ? ev.getCoalescedEvents() : [ev];
     for (const e of events) tools.move(toDoc(e), info(e));
-  } else if (mode === 'none' && tools.tool === 'transform' && ev.pointerType !== 'touch') {
+  } else if (mode === 'none' && tools.tool === 'move' && ev.pointerType !== 'touch') {
     view.style.cursor = tools.hoverCursor(toDoc(ev));
   }
   requestRender();
 });
 // 枠内ダブルクリックで変形を確定(Photoshop と同じ)
-view.addEventListener('dblclick', () => { if (tools.tool === 'transform') { tools.commitTransform(); afterEdit(); } });
+view.addEventListener('dblclick', () => { if (tools.tool === 'move') { tools.commitTransform(); afterEdit(); } });
 
 function pointerEnd(ev: PointerEvent) {
   touchPts.delete(ev.pointerId);
@@ -320,7 +320,7 @@ view.addEventListener('wheel', ev => {
 interface ToolDef { id: ToolId; label: string; key: string; }
 /** 既定の並び(Photoshop のツールパネル順に近い) */
 const TOOL_DEFS: ToolDef[] = [
-  { id: 'move', label: '移動', key: 'V' },
+  { id: 'move', label: '移動(バウンディングボックス: 角で拡大縮小 / 枠の外で回転 / 中で移動。他のツールに切り替えると確定)', key: 'V / Ctrl+T' },
   { id: 'select', label: '長方形選択', key: 'M' },
   { id: 'lasso', label: 'なげなわ', key: 'L' },
   { id: 'eyedropper', label: 'スポイト', key: 'I' },
@@ -330,7 +330,6 @@ const TOOL_DEFS: ToolDef[] = [
   { id: 'rect', label: '長方形', key: 'U で切替' },
   { id: 'ellipse', label: '楕円', key: 'U で切替' },
   { id: 'line', label: 'ライン', key: 'U で切替' },
-  { id: 'transform', label: '自由変形(角: 拡大縮小 / 枠の外: 回転 / 中: 移動、Enter で確定)', key: 'Ctrl+T' },
   { id: 'rotate', label: '回転', key: 'R' },
   { id: 'hand', label: '手のひら', key: 'H / Space' },
   { id: 'zoom', label: 'ズーム(Alt+クリックで縮小)', key: 'Z' },
@@ -341,7 +340,7 @@ function loadToolOrder(): ToolId[] {
   try {
     const saved = JSON.parse(localStorage.getItem(TOOL_ORDER_KEY) || 'null');
     if (Array.isArray(saved)) {
-      const valid = (saved as string[]).map(id => (id === 'scale' ? 'transform' : id)).filter((id): id is ToolId => (all as string[]).includes(id));
+      const valid = (saved as string[]).filter((id): id is ToolId => (all as string[]).includes(id));
       return [...valid, ...all.filter(id => !valid.includes(id))];
     }
   } catch { /* ignore */ }
@@ -483,7 +482,7 @@ window.addEventListener('keydown', ev => {
       case 'z': ev.shiftKey ? redo() : undo(); break;           // Ctrl+Z / Ctrl+Shift+Z(Ctrl+Alt+Z も取り消し)
       case 'y': redo(); break;
       case 's': saveProject(); break;
-      case 't': setTool('transform'); break;                     // 自由変形
+      case 't': setTool('move'); break;                          // 自由変形 = 移動ツールの枠
       case 'd': tools.deselect(); afterEdit(); break;            // 選択解除
       case 'a': selectAll(); break;                              // すべてを選択
       case 'x': doCut(); break;

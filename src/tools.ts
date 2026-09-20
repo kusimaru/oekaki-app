@@ -23,7 +23,26 @@ export interface AppCtx {
 }
 
 /** レイヤーの中身を変えるツール(ロック中は使えない) */
-const EDIT_TOOLS = new Set<ToolId>(['move', 'rotate', 'transform', 'pen', 'eraser', 'bucket', 'line', 'rect', 'ellipse']);
+const EDIT_TOOLS = new Set<ToolId>(['move', 'rotate', 'pen', 'eraser', 'bucket', 'line', 'rect', 'ellipse']);
+
+/** ビットマップレイヤーの描かれている範囲(透明でないピクセルの外接矩形)。何もなければ null */
+function contentBounds(layer: BitmapLayer): Rect | null {
+  const w = layer.canvas.width, h = layer.canvas.height;
+  const d = ctx2d(layer.canvas).getImageData(0, 0, w, h).data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      if (d[row + x * 4 + 3] === 0) continue;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+  }
+  if (x1 < 0) return null;
+  return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
 
 /**
  * 変形パラメータ。元の位置 (cx, cy) を基準に、拡大縮小 → 回転 → 平行移動 の順に適用する。
@@ -74,7 +93,7 @@ export type Clip =
 
 type XformMode = 'move' | 'rotate';
 type ShapeKind = 'line' | 'rect' | 'ellipse';
-const isXform = (t: ToolId) => t === 'move' || t === 'rotate' || t === 'transform';
+const isXform = (t: ToolId) => t === 'move' || t === 'rotate';
 /** バウンディングボックスのハンドル。hx, hy は -1 / 0 / 1(0,0 は使わない) */
 interface Handle { hx: number; hy: number; }
 const HANDLES: Handle[] = [
@@ -118,7 +137,7 @@ export class Tools {
     if (this.op) this.cancel();
     if (!isXform(t)) this.commitTransform();
     this.tool = t;
-    if (t === 'transform') this.beginTransform();
+    if (t === 'move') this.beginTransform();
     this.app.render();
   }
 
@@ -251,13 +270,17 @@ export class Tools {
 
   // ---------- 変形(浮動選択 / ベジェの変形セッション) ----------
 
-  private ensureFloating() {
+  /**
+   * 浮動選択を作る。選択範囲があればそれを、なければ fallback(描かれている範囲など)を、
+   * それもなければレイヤー全体を対象にする。選択範囲がなかった場合は確定後に選択を消す(implicit)
+   */
+  private ensureFloating(fallback?: Selection) {
     if (this.floating) return;
     const layer = this.active;
     if (layer.kind !== 'bitmap') return;
     const { width: w, height: h } = this.doc;
     const implicit = !this.selection;
-    const sel: Selection = this.selection ?? { kind: 'rect', points: [{ x: 0, y: 0 }, { x: w, y: h }] };
+    const sel: Selection = this.selection ?? fallback ?? { kind: 'rect', points: [{ x: 0, y: 0 }, { x: w, y: h }] };
     const path = selectionPath(sel);
     const b = selectionBounds(sel);
     const before = snap(layer);
@@ -284,15 +307,17 @@ export class Tools {
   }
 
   /**
-   * 自由変形ツール選択時: 選択範囲(ベジェは選択図形)があれば枠を出す。
-   * なければ、キャンバス全体ではなく、ユーザーがドラッグで囲んだ範囲に枠を出す(downTransform)
+   * 移動ツール選択時(Photoshop の「バウンディングボックスを表示」と同じ):
+   * 選択範囲があればその範囲、なければ描かれている範囲に枠を出す。何も描かれていなければ、ドラッグで囲んだ範囲(downTransform)
    */
   private beginTransform() {
     const layer = this.active;
     if (this.lockedNotice(layer)) return;
     if (layer.kind === 'bitmap') {
-      if (this.selection) this.ensureFloating();
-      else this.app.notify('変形する範囲をドラッグで囲んでください');
+      if (this.selection) { this.ensureFloating(); return; }
+      const b = contentBounds(layer);
+      if (b) this.ensureFloating({ kind: 'rect', points: [{ x: b.x, y: b.y }, { x: b.x + b.w, y: b.y + b.h }] });
+      else this.app.notify('このレイヤーには何も描かれていません。変形する範囲をドラッグで囲んでください');
     } else if (!this.ensureVectorXf()) {
       this.app.notify('変形する図形をクリックするか、ドラッグで囲んでください');
     }
@@ -408,9 +433,9 @@ export class Tools {
     return { mode: inside ? 'move' : 'rotate', handle: { hx: 0, hy: 0 } };
   }
 
-  /** 自由変形中にポインタが乗っている場所に応じたカーソル */
+  /** 移動ツールでポインタが乗っている場所に応じたカーソル */
   hoverCursor(p: Pt): string {
-    if (this.tool !== 'transform' || !this.box()) return 'default';
+    if (this.tool !== 'move' || !this.box()) return 'move';
     const h = this.hitBox(p);
     if (!h) return 'default';
     if (h.mode === 'move') return 'move';
@@ -431,7 +456,7 @@ export class Tools {
       return;
     }
     if (EDIT_TOOLS.has(this.tool) && this.lockedNotice(layer)) return;
-    if (this.tool === 'transform') { this.downTransform(layer, p, info); this.app.render(); return; }
+    if (this.tool === 'move') { this.downTransform(layer, p, info); this.app.render(); return; }
     if (this.transforming && !isXform(this.tool)) this.commitTransform();
     if (layer.kind === 'bitmap') this.downBitmap(layer, p, info);
     else this.downVector(layer, p, info);
@@ -472,7 +497,7 @@ export class Tools {
     switch (this.tool) {
       case 'select': this.op = { t: 'marquee', start: p, cur: p, shift: info.shift }; break;
       case 'lasso': this.op = { t: 'lasso', pts: [p], shift: info.shift }; break;
-      case 'move': case 'rotate': {
+      case 'rotate': {
         this.ensureFloating();
         const f = this.floating!;
         this.op = { t: 'xform', mode: this.tool, start: p, base: { cx: f.cx, cy: f.cy, tx: f.tx, ty: f.ty, angle: f.angle, sx: f.sx, sy: f.sy } };
@@ -521,7 +546,7 @@ export class Tools {
         break;
       }
       case 'lasso': this.op = { t: 'lasso', pts: [p], shift: info.shift }; break;
-      case 'move': case 'rotate': {
+      case 'rotate': {
         if (!this.selectedShapes.size) {
           const hit = this.hitAt(layer, p);
           if (!hit) break;
@@ -961,8 +986,8 @@ export class Tools {
       }
       ctx.setLineDash([]);
     }
-    // 自由変形のバウンディングボックス
-    const box = this.tool === 'transform' || this.vxf ? this.box() : null;
+    // 移動ツールのバウンディングボックス
+    const box = this.tool === 'move' || this.vxf ? this.box() : null;
     if (box) {
       const b = box.bounds;
       const corners = [{ x: b.x, y: b.y }, { x: b.x + b.w, y: b.y }, { x: b.x + b.w, y: b.y + b.h }, { x: b.x, y: b.y + b.h }].map(p => xfPoint(box, p));

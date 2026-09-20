@@ -40,7 +40,7 @@ export interface Selection {
 }
 
 export type ToolId =
-  | 'select' | 'lasso' | 'move' | 'rotate' | 'transform'
+  | 'select' | 'lasso' | 'move' | 'rotate'
   | 'pen' | 'eraser' | 'bucket' | 'eyedropper'
   | 'line' | 'rect' | 'ellipse' | 'hand' | 'zoom';
 
