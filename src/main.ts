@@ -103,6 +103,7 @@ const app: AppCtx = {
   pickColor: setColor,
   compositeData: () => ctx2d(compositeToCanvas(doc)).getImageData(0, 0, doc.width, doc.height),
   notify: msg => setStatus(msg),
+  setTool: t => setTool(t),
 };
 const tools = new Tools(app);
 
@@ -323,7 +324,7 @@ const TOOL_DEFS: ToolDef[] = [
   { id: 'move', label: '移動(バウンディングボックス: 角で拡大縮小 / 枠の外で回転 / 中で移動。他のツールに切り替えると確定)', key: 'V / Ctrl+T' },
   { id: 'select', label: '長方形選択', key: 'M' },
   { id: 'lasso', label: 'なげなわ', key: 'L' },
-  { id: 'eyedropper', label: 'スポイト', key: 'I' },
+  { id: 'eyedropper', label: 'スポイト(押している間だけ。離すと前のツールに戻る。ブラシ中は Alt+クリック)', key: 'I' },
   { id: 'pen', label: 'ブラシ', key: 'B' },
   { id: 'eraser', label: '消しゴム', key: 'E' },
   { id: 'bucket', label: '塗りつぶし', key: 'G' },

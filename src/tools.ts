@@ -20,7 +20,12 @@ export interface AppCtx {
   compositeData(): ImageData;
   /** 操作できない理由などをユーザーに知らせる */
   notify(msg: string): void;
+  /** ツールを切り替える(ツールバーの表示も更新される) */
+  setTool(t: ToolId): void;
 }
+
+/** Alt+クリックで一時的にスポイトになるツール */
+const ALT_PICK_TOOLS = new Set<ToolId>(['pen', 'bucket', 'line', 'rect', 'ellipse']);
 
 /** レイヤーの中身を変えるツール(ロック中は使えない) */
 const EDIT_TOOLS = new Set<ToolId>(['move', 'rotate', 'pen', 'eraser', 'bucket', 'line', 'rect', 'ellipse']);
@@ -113,7 +118,8 @@ type Op =
   | { t: 'shape'; kind: ShapeKind; start: Pt; cur: Pt; shift: boolean }
   | { t: 'xform'; mode: XformMode; start: Pt; base: XParams }
   | { t: 'vxform'; mode: XformMode; start: Pt; base: Map<string, Shape>; center: Pt; before: Snap; moved: boolean }
-  | { t: 'box'; mode: 'move' | 'rotate' | 'scale'; handle: Handle; anchor: Pt; start: Pt; base: XParams };
+  | { t: 'box'; mode: 'move' | 'rotate' | 'scale'; handle: Handle; anchor: Pt; start: Pt; base: XParams }
+  | { t: 'pick'; /** 離したときに戻るツール */ revert: ToolId | null };
 
 const dist = (a: Pt, b: Pt) => Math.hypot(b.x - a.x, b.y - a.y);
 
@@ -133,9 +139,13 @@ export class Tools {
   /** 自由変形の枠が出ているか */
   get transforming() { return this.floating !== null || this.vxf !== null; }
 
+  /** スポイトを選ぶ直前のツール(スポイトは離すとここへ戻る) */
+  private prevTool: ToolId = 'pen';
+
   setTool(t: ToolId) {
     if (this.op) this.cancel();
     if (!isXform(t)) this.commitTransform();
+    if (t === 'eyedropper' && this.tool !== 'eyedropper') this.prevTool = this.tool;
     this.tool = t;
     if (t === 'move') this.beginTransform();
     this.app.render();
@@ -450,9 +460,10 @@ export class Tools {
 
   down(p: Pt, info: InputInfo) {
     const layer = this.active;
-    if (this.tool === 'eyedropper') {
-      const c = this.sample(p);
-      if (c) this.app.pickColor(c);
+    // スポイト: 押している間だけ色を拾い続け、離すと直前のツールに戻る。Alt+クリックは一時的なスポイト
+    if (this.tool === 'eyedropper' || (info.alt && ALT_PICK_TOOLS.has(this.tool))) {
+      this.op = { t: 'pick', revert: this.tool === 'eyedropper' ? this.prevTool : null };
+      this.pickAt(p);
       return;
     }
     if (EDIT_TOOLS.has(this.tool) && this.lockedNotice(layer)) return;
@@ -633,8 +644,14 @@ export class Tools {
         break;
       }
       case 'box': this.moveBox(op, p, info); break;
+      case 'pick': this.pickAt(p); break;
     }
     this.app.render();
+  }
+
+  private pickAt(p: Pt) {
+    const c = this.sample(p);
+    if (c) this.app.pickColor(c);
   }
 
   /** バウンディングボックスのドラッグ(移動 / 回転 / 拡大縮小) */
@@ -761,6 +778,10 @@ export class Tools {
       }
       case 'xform': break;   // 浮動選択は Enter / ツール変更で確定
       case 'box': break;     // 同上
+      case 'pick':
+        this.pickAt(p);
+        if (op.revert && op.revert !== 'eyedropper') this.app.setTool(op.revert);
+        break;
       case 'vxform':
         if (op.moved) {
           this.app.history.push(layer.id, op.before, snap(layer));
