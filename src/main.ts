@@ -25,9 +25,11 @@ interface SyncState {
   remoteChanged: boolean;
   /** GitHub 側を最後に更新した端末と日時 */
   lastInfo: { device: string; date: string } | null;
+  /** まだつながっていないタブについて、GitHub に同名の絵があるか最後に調べた時刻 */
+  checkedAt: number;
   knownPaths: Set<string>;
 }
-const newSyncState = (): SyncState => ({ lastSha: null, synced: false, dirty: false, lastEdit: 0, busy: false, conflict: false, remoteChanged: false, lastInfo: null, knownPaths: new Set() });
+const newSyncState = (): SyncState => ({ lastSha: null, synced: false, dirty: false, lastEdit: 0, busy: false, conflict: false, remoteChanged: false, lastInfo: null, checkedAt: 0, knownPaths: new Set() });
 /** コミットメッセージに入れる端末名 */
 const DEVICE = /iPad|iPhone/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ? 'iPad'
   : /Android/.test(navigator.userAgent) ? 'Android' : 'PC';
@@ -857,6 +859,7 @@ function renameTab(tab: Tab, name: string) {
   updateSyncStatus();
   saveTabIndex();
   scheduleAutosave();
+  autoSyncTick(); // 新しい名前の絵が GitHub にあればすぐ受け取る
 }
 /** 今のドキュメントを差し替える(GitHub からの取得など) */
 function replaceTabDoc(tab: Tab, d: Doc) {
@@ -925,6 +928,7 @@ $('new-ok').addEventListener('click', () => {
   dlgNew.close();
   saveTab(cur);
   saveTabIndex();
+  autoSyncTick(); // 同じ名前の絵が GitHub にあればすぐ受け取る
 });
 
 async function saveProject() {
@@ -1203,7 +1207,13 @@ async function autoSyncTick() {
     try {
       const gh = ghFor(tab)!;
       if (!s.synced) {
-        if (!s.dirty) continue;
+        if (!s.dirty) {
+          // 空の新しいタブ: GitHub に同じ名前の絵があれば受け取る(1 分に 1 回だけ確認)
+          if (Date.now() - s.checkedAt < 60_000) continue;
+          s.checkedAt = Date.now();
+          if (await gh.remoteHasProject()) await pull(tab);
+          continue;
+        }
         if (await gh.remoteHasProject()) { s.conflict = true; s.remoteChanged = true; await refreshLastInfo(tab); }
         else await push(tab, true);
       } else if (s.dirty) {
