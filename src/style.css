@@ -10,6 +10,8 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+/* hidden 属性を display:flex などの指定より優先させる(ライブラリや同期ボタンの表示切替に使う) */
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; -webkit-user-select: none; user-select: none; }
 #app {
   display: grid;
