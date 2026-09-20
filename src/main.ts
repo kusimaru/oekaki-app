@@ -48,7 +48,7 @@ let selectedLayerIds = new Set<string>();
 
 let color: Rgba = { r: 0, g: 0, b: 0, a: 1 };
 const options: ToolOptions = { size: 6, fill: false, tolerance: 24, pressure: true, sampleAll: false };
-let fingerDraws = true;
+let fingerDraws = false;
 
 const view = $<HTMLCanvasElement>('view');
 const vctx = view.getContext('2d')!;
@@ -161,7 +161,6 @@ let panId: number | null = null;
 let panStart = { x: 0, y: 0, px: 0, py: 0 };
 let pinchStart = { dist: 1, zoom: 1, docX: 0, docY: 0 };
 let spaceDown = false;
-let penSeen = false;
 
 function pinchInfo() {
   const [a, b] = [...touchPts.values()];
@@ -206,11 +205,6 @@ view.addEventListener('pointerdown', ev => {
   cursorPos = toDoc(ev);
 
   if (ev.pointerType === 'pen') {
-    if (!penSeen) {
-      penSeen = true;
-      fingerDraws = false;
-      $<HTMLInputElement>('opt-finger').checked = false;
-    }
     // 手のひらが先に触れていても Pencil を優先する
     if (mode === 'pan' || mode === 'pinch') { mode = 'none'; panId = null; }
     if (mode === 'draw') return;

@@ -1,6 +1,6 @@
 import type { Doc, DocKind, Layer, Shape } from './types';
 import { css } from './color';
-import { shapePath } from './vector';
+import { rectAnchors, shapePath } from './vector';
 
 let seq = 0;
 export const uid = () => Date.now().toString(36) + '-' + (seq++).toString(36) + Math.random().toString(36).slice(2, 6);
@@ -20,8 +20,16 @@ export function createLayer(kind: DocKind, w: number, h: number, name: string): 
     : { ...base, kind: 'vector', shapes: [] };
 }
 
+/** 新規キャンバス。白で塗った「背景」レイヤーを 1 枚持つ */
 export function createDoc(kind: DocKind, w: number, h: number): Doc {
-  const l = createLayer(kind, w, h, 'レイヤー 1');
+  const l = createLayer(kind, w, h, '背景');
+  if (l.kind === 'bitmap') {
+    const c = ctx2d(l.canvas);
+    c.fillStyle = '#fff';
+    c.fillRect(0, 0, w, h);
+  } else {
+    l.shapes.push({ id: uid(), anchors: rectAnchors({ x: 0, y: 0 }, { x: w, y: h }), closed: true, stroke: null, strokeWidth: 0, fill: { r: 255, g: 255, b: 255, a: 1 } });
+  }
   return { kind, width: w, height: h, layers: [l], activeLayerId: l.id, palette: [] };
 }
 
