@@ -68,15 +68,15 @@ button.active { background: var(--accent); color: #222; border-color: var(--acce
 #sync-buttons button.attention { box-shadow: 0 0 0 2px var(--accent); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { filter: brightness(1.35); } }
 /* ボスが来た */
-#btn-boss { width: 42px; height: 58px; margin-top: 6px; margin-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: #555; color: #fff; border: 1px solid #777; border-radius: 8px; flex: none; }
+/* 「受け取る」との押し間違いを防ぐため、上に広めの間隔を取り、縦に大きくする */
+#btn-boss { width: 42px; height: 116px; margin-top: 28px; margin-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: #555; color: #fff; border: 1px solid #777; border-radius: 8px; flex: none; }
 #btn-boss:hover { background: #666; }
-#btn-boss:active { transform: scale(.94); }
-#btn-boss svg { width: 26px; height: 26px; }
-#btn-boss .lbl { font-size: 10px; line-height: 1; }
-#sync-buttons + #btn-boss { margin-top: 0; }
+#btn-boss:active { transform: scale(.96); }
+#btn-boss svg { width: 28px; height: 28px; }
+#btn-boss .lbl { font-size: 11px; line-height: 1; }
 #sync-buttons[hidden] + #btn-boss { margin-top: auto; }
 #boss-screen { position: fixed; inset: 0; z-index: 1000; background: #000; }
-#btn-boss-restore { position: absolute; left: 4px; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); width: 42px; height: 58px; background: #111; border: 1px solid #222; border-radius: 8px; }
+#btn-boss-restore { position: absolute; left: 4px; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); width: 42px; height: 116px; background: #111; border: 1px solid #222; border-radius: 8px; }
 #btn-boss-restore:hover { background: #1a1a1a; }
 .layer .lock { border: none; background: transparent; padding: 0 2px; font-size: 13px; line-height: 1; opacity: .35; }
 .layer .lock.on { opacity: 1; }
