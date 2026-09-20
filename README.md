@@ -96,6 +96,10 @@ Chrome / Edge で公開 URL を開き、アドレスバー右端の「インス�
 | Ctrl+A / Ctrl+D / Delete | すべて選択 / 選択解除 / 選択範囲を消去 |
 | Ctrl+0 / Ctrl+1 / Ctrl++ / Ctrl+- | 画面に合わせる / 100% / ズームイン / ズームアウト |
 | Ctrl+Shift+N / Ctrl+S | 新規レイヤー / プロジェクト保存 |
+| Ctrl+J / Ctrl+E / Ctrl+/ | レイヤーを複製 / 下のレイヤーと結合 / ロック切替 |
+| Alt+[ / Alt+] | 下 / 上のレイヤーを選ぶ |
+| Ctrl+Shift+L / Ctrl+PageUp / Ctrl+PageDown | ライブラリ / 前のタブ / 次のタブ |
+| Ctrl+Alt+S / Ctrl+Alt+R / Ctrl+Alt+B | 送る / 受け取る / ボスが来た(左手デバイス用) |
 | Space+ドラッグ / Ctrl+ホイール / Alt+クリック(ズームツール) | パン / ズーム / ズームアウト |
 
 ## 構成

@@ -481,7 +481,6 @@ window.addEventListener('keydown', ev => {
     switch (k) {
       case 'z': ev.shiftKey ? redo() : undo(); break;           // Ctrl+Z / Ctrl+Shift+Z(Ctrl+Alt+Z も取り消し)
       case 'y': redo(); break;
-      case 's': saveProject(); break;
       case 't': setTool('move'); break;                          // 自由変形 = 移動ツールの枠
       case 'd': tools.deselect(); afterEdit(); break;            // 選択解除
       case 'a': selectAll(); break;                              // すべてを選択
@@ -494,9 +493,24 @@ window.addEventListener('keydown', ev => {
       case '-': zoomCenter(0.8); break;                          // ズームアウト
       case 'n': if (ev.shiftKey) $('btn-layer-add').click(); else openNewDialog(); break; // 新規レイヤー / 新規キャンバス
       case 'pageup': case 'pagedown': cycleTab(k === 'pageup' ? -1 : 1); break;          // タブ切り替え
+      case 'j': duplicateLayer(); break;                                                   // レイヤーを複製(Photoshop: Ctrl+J)
+      case 'e': mergeDown(); break;                                                        // 下のレイヤーと結合(Photoshop: Ctrl+E)
+      case '/': toggleLockActive(); break;                                                 // ロック切替(Photoshop: Ctrl+/)
+      case 'l': if (ev.shiftKey) openLibrary(); else handled = false; break;               // ライブラリ(Ctrl+Shift+L)
+      // 左手デバイス(TourBox など)向け: Ctrl+Alt+S 送る / Ctrl+Alt+R 受け取る / Ctrl+Alt+B ボス
+      case 's': if (ev.altKey) $('btn-send').click(); else saveProject(); break;
+      case 'r': if (ev.altKey) $('btn-receive').click(); else handled = false; break;
+      case 'b': if (ev.altKey) toggleBoss(); else handled = false; break;
       default: handled = false;
     }
     if (handled) ev.preventDefault();
+    return;
+  }
+  if (ev.altKey && (k === '[' || k === ']')) {                   // 上下のレイヤーを選ぶ(Photoshop: Alt+[ / Alt+])
+    const i = doc.layers.findIndex(l => l.id === doc.activeLayerId);
+    const j = i + (k === ']' ? 1 : -1);
+    if (j >= 0 && j < doc.layers.length) setActiveLayer(doc.layers[j].id);
+    ev.preventDefault();
     return;
   }
   if (KEY_TOOLS[k]) { setTool(KEY_TOOLS[k]); return; }
@@ -797,6 +811,31 @@ const moveLayer = (dir: 1 | -1) => {
     for (const i of order) [doc.layers[i], doc.layers[i + dir]] = [doc.layers[i + dir], doc.layers[i]];
   });
 };
+/** アクティブレイヤーを複製して上に置く(Photoshop: Ctrl+J) */
+function duplicateLayer() {
+  tools.commitTransform();
+  const src = activeLayer(doc);
+  withLayersHistory(() => {
+    const l = addLayerAbove(`${src.name} のコピー`);
+    l.visible = src.visible; l.opacity = src.opacity;
+    if (l.kind === 'bitmap' && src.kind === 'bitmap') ctx2d(l.canvas).drawImage(src.canvas, 0, 0);
+    else if (l.kind === 'vector' && src.kind === 'vector') l.shapes = structuredClone(src.shapes).map(s => ({ ...s, id: uid() }));
+  });
+}
+/** アクティブレイヤーを下のレイヤーと結合(Photoshop: Ctrl+E) */
+function mergeDown() {
+  const i = doc.layers.findIndex(l => l.id === doc.activeLayerId);
+  if (i <= 0) { setStatus('下にレイヤーがありません'); return; }
+  selectedLayerIds = new Set([doc.layers[i - 1].id, doc.layers[i].id]);
+  mergeSelectedLayers();
+}
+function toggleLockActive() {
+  const l = activeLayer(doc);
+  l.locked = !l.locked;
+  if (l.locked) { tools.cancel(); tools.commitTransform(); }
+  setStatus(`レイヤー「${l.name}」を${l.locked ? 'ロックしました' : 'ロック解除しました'}`);
+  markDirty(); renderLayers();
+}
 $('btn-layer-multi').addEventListener('click', () => { multiSelectMode = !multiSelectMode; renderLayers(); });
 $('btn-layer-merge').addEventListener('click', mergeSelectedLayers);
 $('btn-layer-up').addEventListener('click', () => moveLayer(1));
