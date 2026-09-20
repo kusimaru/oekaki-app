@@ -1,7 +1,7 @@
 import type { Doc, DocKind, InputInfo, Pt, Rgba, ToolId, ToolOptions } from './types';
 import { BASIC_COLORS, css, fromHex, hex, same } from './color';
-import { activeLayer, composite, compositeToCanvas, createDoc, createLayer, ctx2d, rasterizeLayer } from './document';
-import { History } from './history';
+import { activeLayer, composite, compositeToCanvas, createDoc, createLayer, ctx2d, rasterizeLayer, uid } from './document';
+import { History, layersState, snap } from './history';
 import { Tools, type AppCtx } from './tools';
 import { download, exportPng, exportPsd, exportSvg } from './exporters';
 import { PROJECT_FILE, deserialize, serialize, type Manifest } from './project';
@@ -362,6 +362,50 @@ function selectAll() {
   else tools.selection = { kind: 'rect', points: [{ x: 0, y: 0 }, { x: doc.width, y: doc.height }] };
   requestRender();
 }
+// ---------------- 編集(カット / コピー / ペースト) ----------------
+function doCopy() { if (!tools.copy()) setStatus('コピーするものがありません'); requestRender(); }
+function doCut() { if (!tools.cut()) setStatus('カットするものがありません'); afterEdit(); }
+function doPaste() {
+  const clip = tools.clipboard;
+  if (!clip) { setStatus('クリップボードが空です'); return; }
+  tools.commitFloating();
+  const layer = activeLayer(doc);
+  if (clip.kind === 'bitmap' && doc.kind === 'bitmap') {
+    // Photoshop と同じく新しいレイヤーに、元の位置へ貼り付ける
+    tools.selection = null;
+    withLayersHistory(() => {
+      const l = addLayerAbove('ペースト');
+      if (l.kind === 'bitmap') ctx2d(l.canvas).drawImage(clip.canvas, clip.x, clip.y);
+    });
+    tools.selection = { kind: 'rect', points: [{ x: clip.x, y: clip.y }, { x: clip.x + clip.canvas.width, y: clip.y + clip.canvas.height }] };
+    setTool('move');
+  } else if (clip.kind === 'vector' && layer.kind === 'vector') {
+    // 同じレイヤーへ貼ると重なって見えないので少しずらす
+    const off = clip.layerId === layer.id ? 16 : 0;
+    const before = snap(layer);
+    const clones = clip.shapes.map(s => ({
+      ...structuredClone(s), id: uid(),
+      anchors: s.anchors.map(a => ({ x: a.x + off, y: a.y + off, inX: a.inX + off, inY: a.inY + off, outX: a.outX + off, outY: a.outY + off })),
+    }));
+    layer.shapes.push(...clones);
+    history.push(layer.id, before, snap(layer));
+    tools.selectedShapes = new Set(clones.map(s => s.id));
+    tools.clipboard = { kind: 'vector', shapes: structuredClone(clones), layerId: layer.id };
+    markDirty();
+    setTool('select');
+    afterEdit();
+  } else {
+    setStatus('形式が違うため貼り付けできません(ビットマップ ⇄ ベジェ)', 'err');
+  }
+}
+$('btn-cut').addEventListener('click', doCut);
+$('btn-copy').addEventListener('click', doCopy);
+$('btn-paste').addEventListener('click', doPaste);
+$('btn-delete').addEventListener('click', () => { tools.deleteSelection(); afterEdit(); });
+$('btn-select-all').addEventListener('click', () => selectAll());
+$('btn-deselect').addEventListener('click', () => { tools.cancel(); tools.deselect(); afterEdit(); });
+$('btn-commit').addEventListener('click', () => { tools.commitFloating(); afterEdit(); });
+
 function zoomCenter(factor: number) {
   const r = view.getBoundingClientRect();
   zoomAt(r.left + r.width / 2, r.top + r.height / 2, factor);
@@ -381,6 +425,9 @@ window.addEventListener('keydown', ev => {
       case 't': setTool('scale'); break;                         // 自由変形
       case 'd': tools.deselect(); afterEdit(); break;            // 選択解除
       case 'a': selectAll(); break;                              // すべてを選択
+      case 'x': doCut(); break;
+      case 'c': doCopy(); break;
+      case 'v': doPaste(); break;
       case '0': zoomFit(); break;                                // 画面サイズに合わせる
       case '1': zoomCenter(1 / zoom); break;                     // 100%
       case '=': case '+': case ';': zoomCenter(1.25); break;     // ズームイン
@@ -526,30 +573,41 @@ function renderLayers() {
   }
   $('doc-info').textContent = `${doc.kind === 'bitmap' ? 'ビットマップ' : 'ベジェ'} ${doc.width}×${doc.height}`;
 }
-$('btn-layer-add').addEventListener('click', () => {
-  tools.commitFloating();
+/** レイヤー構成を変える操作を取り消し可能にして実行する */
+function withLayersHistory(fn: () => void) {
+  const before = layersState(doc);
+  fn();
+  history.pushLayers(before, layersState(doc));
+  markDirty(); renderLayers(); afterEdit();
+}
+/** アクティブレイヤーの上に新しいレイヤーを追加してアクティブにする */
+function addLayerAbove(name: string) {
   const idx = doc.layers.findIndex(l => l.id === doc.activeLayerId);
-  const l = createLayer(doc.kind, doc.width, doc.height, `レイヤー ${doc.layers.length + 1}`);
+  const l = createLayer(doc.kind, doc.width, doc.height, name);
   doc.layers.splice(idx + 1, 0, l);
   doc.activeLayerId = l.id;
+  return l;
+}
+$('btn-layer-add').addEventListener('click', () => {
+  tools.commitFloating();
   tools.selectedShapes.clear();
-  markDirty(); renderLayers(); requestRender();
+  withLayersHistory(() => addLayerAbove(`レイヤー ${doc.layers.length + 1}`));
 });
 $('btn-layer-del').addEventListener('click', () => {
   if (doc.layers.length <= 1) return;
-  tools.cancel(); tools.floating = null; tools.selectedShapes.clear();
-  const idx = doc.layers.findIndex(l => l.id === doc.activeLayerId);
-  doc.layers.splice(idx, 1);
-  doc.activeLayerId = doc.layers[Math.min(idx, doc.layers.length - 1)].id;
-  markDirty(); renderLayers(); requestRender();
+  tools.cancel(); tools.commitFloating(); tools.selectedShapes.clear();
+  withLayersHistory(() => {
+    const idx = doc.layers.findIndex(l => l.id === doc.activeLayerId);
+    doc.layers.splice(idx, 1);
+    doc.activeLayerId = doc.layers[Math.min(idx, doc.layers.length - 1)].id;
+  });
 });
 const moveLayer = (dir: 1 | -1) => {
   tools.commitFloating();
   const idx = doc.layers.findIndex(l => l.id === doc.activeLayerId);
   const j = idx + dir;
   if (j < 0 || j >= doc.layers.length) return;
-  [doc.layers[idx], doc.layers[j]] = [doc.layers[j], doc.layers[idx]];
-  markDirty(); renderLayers(); requestRender();
+  withLayersHistory(() => { [doc.layers[idx], doc.layers[j]] = [doc.layers[j], doc.layers[idx]]; });
 };
 $('btn-layer-up').addEventListener('click', () => moveLayer(1));
 $('btn-layer-down').addEventListener('click', () => moveLayer(-1));

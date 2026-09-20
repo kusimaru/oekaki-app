@@ -31,6 +31,10 @@ export interface Floating {
   implicit: boolean;
 }
 
+export type Clip =
+  | { kind: 'bitmap'; canvas: HTMLCanvasElement; x: number; y: number }
+  | { kind: 'vector'; shapes: Shape[]; layerId: string };
+
 type XformMode = 'move' | 'rotate' | 'scale';
 type ShapeKind = 'line' | 'rect' | 'ellipse';
 const isXform = (t: ToolId): t is XformMode => t === 'move' || t === 'rotate' || t === 'scale';
@@ -92,6 +96,49 @@ export class Tools {
     if (op.t === 'erase' || op.t === 'verase' || op.t === 'vxform') restore(layer, op.before);
     if (op.t === 'xform' && this.floating) Object.assign(this.floating, op.base);
     this.app.render();
+  }
+
+  /** アプリ内クリップボード */
+  clipboard: Clip | null = null;
+
+  /** 選択範囲(なければレイヤー全体)をクリップボードへ。コピーできたら true */
+  copy(): boolean {
+    this.commitFloating();
+    const layer = this.active;
+    const { width: w, height: h } = this.doc;
+    if (layer.kind === 'vector') {
+      const shapes = layer.shapes.filter(s => this.selectedShapes.has(s.id));
+      if (!shapes.length) return false;
+      this.clipboard = { kind: 'vector', shapes: structuredClone(shapes), layerId: layer.id };
+      return true;
+    }
+    const sel: Selection = this.selection ?? { kind: 'rect', points: [{ x: 0, y: 0 }, { x: w, y: h }] };
+    const b = selectionBounds(sel);
+    const x0 = Math.max(0, Math.floor(b.x)), y0 = Math.max(0, Math.floor(b.y));
+    const x1 = Math.min(w, Math.ceil(b.x + b.w)), y1 = Math.min(h, Math.ceil(b.y + b.h));
+    if (x1 - x0 < 1 || y1 - y0 < 1) return false;
+    const c = makeCanvas(x1 - x0, y1 - y0);
+    const cx = ctx2d(c);
+    cx.translate(-x0, -y0);
+    cx.clip(selectionPath(sel));
+    cx.drawImage(layer.canvas, 0, 0);
+    this.clipboard = { kind: 'bitmap', canvas: c, x: x0, y: y0 };
+    return true;
+  }
+
+  /** コピーして選択範囲を消す。選択がなければレイヤー全体 */
+  cut(): boolean {
+    if (!this.copy()) return false;
+    const layer = this.active;
+    if (layer.kind === 'bitmap' && !this.selection) {
+      this.selection = { kind: 'rect', points: [{ x: 0, y: 0 }, { x: this.doc.width, y: this.doc.height }] };
+      this.deleteSelection();
+      this.selection = null;
+      this.app.render();
+    } else {
+      this.deleteSelection();
+    }
+    return true;
   }
 
   deleteSelection() {
