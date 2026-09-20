@@ -16,6 +16,7 @@ export interface LayerManifest {
   name: string;
   visible: boolean;
   opacity: number;
+  locked?: boolean;
   kind: DocKind;
   shapes?: Shape[];
   /** ファイル分割保存時: PNG の相対パス */
@@ -55,7 +56,7 @@ export async function serialize(doc: Doc, mode: 'embed' | 'files'): Promise<{ ma
   const files: { path: string; blob: Blob }[] = [];
   const layers: LayerManifest[] = [];
   for (const l of doc.layers) {
-    const m: LayerManifest = { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, kind: l.kind };
+    const m: LayerManifest = { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, locked: !!l.locked, kind: l.kind };
     if (l.kind === 'vector') {
       m.shapes = l.shapes;
     } else {
@@ -78,7 +79,7 @@ export async function serialize(doc: Doc, mode: 'embed' | 'files'): Promise<{ ma
 export async function deserialize(manifest: Manifest, loadFile: (path: string) => Promise<Blob | null>): Promise<Doc> {
   const layers: Layer[] = [];
   for (const m of manifest.layers) {
-    const base = { id: m.id || uid(), name: m.name, visible: m.visible ?? true, opacity: m.opacity ?? 1 };
+    const base = { id: m.id || uid(), name: m.name, visible: m.visible ?? true, opacity: m.opacity ?? 1, locked: !!m.locked };
     if (m.kind === 'vector') {
       layers.push({ ...base, kind: 'vector', shapes: m.shapes ?? [] });
     } else {

@@ -102,6 +102,7 @@ const app: AppCtx = {
   dirty: markDirty,
   pickColor: setColor,
   compositeData: () => ctx2d(compositeToCanvas(doc)).getImageData(0, 0, doc.width, doc.height),
+  notify: msg => setStatus(msg),
 };
 const tools = new Tools(app);
 
@@ -720,6 +721,12 @@ function renderLayers() {
     eye.title = '表示';
     eye.addEventListener('change', () => { l.visible = eye.checked; markDirty(); requestRender(); });
     eye.addEventListener('click', ev => ev.stopPropagation());
+    const lock = document.createElement('button');
+    lock.className = 'lock' + (l.locked ? ' on' : '');
+    lock.textContent = l.locked ? '🔒' : '🔓';
+    lock.title = l.locked ? 'ロック中(押して解除)' : '書き込み禁止にする';
+    lock.addEventListener('click', ev => { ev.stopPropagation(); l.locked = !l.locked; if (l.locked) { tools.cancel(); tools.commitFloating(); } markDirty(); renderLayers(); });
+    row.classList.toggle('locked', !!l.locked);
     const thumb = document.createElement('canvas');
     thumb.className = 'thumb';
     thumb.width = 32; thumb.height = 24;
@@ -737,7 +744,7 @@ function renderLayers() {
     op.addEventListener('input', () => { l.opacity = Number(op.value) / 100; requestRender(); });
     op.addEventListener('change', markDirty);
     op.addEventListener('pointerdown', ev => ev.stopPropagation());
-    row.append(eye, thumb, name, op);
+    row.append(eye, lock, thumb, name, op);
     row.addEventListener('click', ev => setActiveLayer(l.id, { toggle: ev.ctrlKey || ev.metaKey || multiSelectMode, range: ev.shiftKey }));
     el.appendChild(row);
   }
@@ -979,6 +986,19 @@ function renderTabs() {
   el.querySelector('.tab.active')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
 }
 $('btn-tab-new').addEventListener('click', () => openNewDialog());
+
+// ---------------- ボスが来た(緊急で画面を隠す) ----------------
+let bossHidden = false;
+const ORIGINAL_TITLE = document.title;
+function toggleBoss() {
+  bossHidden = !bossHidden;
+  if (bossHidden) { tools.cancel(); flushAutosave(); }
+  $('boss-screen').hidden = !bossHidden;
+  document.title = bossHidden ? 'Untitled' : ORIGINAL_TITLE;
+  if (!bossHidden) requestRender();
+}
+$('btn-boss').addEventListener('click', toggleBoss);
+$('btn-boss-restore').addEventListener('click', toggleBoss);
 
 // ---------------- ライブラリ(ノートブック › セクション › 画像) ----------------
 const STRUCTURE_KEY = 'oekaki.structure';
@@ -1503,6 +1523,8 @@ async function restoreTabs(): Promise<boolean> {
 function markDirty() {
   cur.sync.dirty = true;
   cur.sync.lastEdit = Date.now();
+  $<HTMLButtonElement>('btn-undo').disabled = !history.canUndo;
+  $<HTMLButtonElement>('btn-redo').disabled = !history.canRedo;
   scheduleLayerPanel();
   scheduleAutosave();
   updateSyncStatus();

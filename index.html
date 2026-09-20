@@ -58,7 +58,15 @@
         <span class="lbl">受け取る</span>
       </button>
     </div>
+    <button id="btn-boss" class="boss" title="ボスが来た: 画面を真っ黒にして隠す(もう一度押すと戻る)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 8 10 8a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3 8 10 8a9.74 9.74 0 0 0 5.39-1.61"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="m2 2 20 20"/></svg>
+      <span class="lbl">ボス</span>
+    </button>
   </aside>
+
+  <div id="boss-screen" hidden>
+    <button id="btn-boss-restore" title="元に戻す" aria-label="元に戻す"></button>
+  </div>
 
   <main id="viewport"><canvas id="view"></canvas><div id="sync-banner" hidden></div></main>
 

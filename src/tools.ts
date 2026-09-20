@@ -18,7 +18,12 @@ export interface AppCtx {
   dirty(): void;
   pickColor(c: Rgba): void;
   compositeData(): ImageData;
+  /** 操作できない理由などをユーザーに知らせる */
+  notify(msg: string): void;
 }
+
+/** レイヤーの中身を変えるツール(ロック中は使えない) */
+const EDIT_TOOLS = new Set<ToolId>(['move', 'rotate', 'scale', 'pen', 'eraser', 'bucket', 'line', 'rect', 'ellipse']);
 
 /** ビットマップの浮動選択(移動・回転・拡縮中のピクセル) */
 export interface Floating {
@@ -141,6 +146,7 @@ export class Tools {
 
   /** コピーして選択範囲を消す。選択がなければレイヤー全体 */
   cut(): boolean {
+    if (this.lockedNotice(this.active)) return false;
     if (!this.copy()) return false;
     const layer = this.active;
     if (layer.kind === 'bitmap' && !this.selection) {
@@ -157,6 +163,7 @@ export class Tools {
   deleteSelection() {
     const layer = this.active;
     const { width: w, height: h } = this.doc;
+    if (this.lockedNotice(layer)) return;
     if (layer.kind === 'vector') {
       if (!this.selectedShapes.size) return;
       const before = snap(layer);
@@ -244,6 +251,13 @@ export class Tools {
 
   // ---------- 入力 ----------
 
+  /** ロック中のレイヤーなら知らせて true */
+  private lockedNotice(layer: Layer): boolean {
+    if (!layer.locked) return false;
+    this.app.notify(`レイヤー「${layer.name}」はロックされています(レイヤーパネルの 🔒 で解除)`);
+    return true;
+  }
+
   down(p: Pt, info: InputInfo) {
     const layer = this.active;
     if (this.tool === 'eyedropper') {
@@ -251,6 +265,7 @@ export class Tools {
       if (c) this.app.pickColor(c);
       return;
     }
+    if (EDIT_TOOLS.has(this.tool) && this.lockedNotice(layer)) return;
     if (this.floating && !isXform(this.tool)) this.commitFloating();
     if (layer.kind === 'bitmap') this.downBitmap(layer, p, info);
     else this.downVector(layer, p, info);

@@ -55,7 +55,7 @@ button.active { background: var(--accent); color: #222; border-color: var(--acce
 #tools button.drop-after::after { bottom: -2px; }
 /* 送る / 受け取る: ツールバー下部の大きな色違いボタン */
 /* iPad のホームインジケーター領域(画面最下部)を避けて、少し上に置く */
-#sync-buttons { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; margin-top: 6px; border-top: 1px solid var(--panel-border); padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); flex: none; }
+#sync-buttons { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; margin-top: 6px; border-top: 1px solid var(--panel-border); padding-bottom: 6px; flex: none; }
 #sync-buttons button:active { transform: scale(.94); filter: brightness(1.3); }
 #sync-buttons button { width: 42px; height: 54px; padding: 4px 0 3px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: #fff; border: 1px solid transparent; border-radius: 8px; }
 #sync-buttons button svg { width: 24px; height: 24px; }
@@ -67,6 +67,20 @@ button.active { background: var(--accent); color: #222; border-color: var(--acce
 #sync-buttons button:disabled { opacity: .55; }
 #sync-buttons button.attention { box-shadow: 0 0 0 2px var(--accent); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { filter: brightness(1.35); } }
+/* ボスが来た */
+#btn-boss { width: 42px; height: 58px; margin-top: 6px; margin-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: #555; color: #fff; border: 1px solid #777; border-radius: 8px; flex: none; }
+#btn-boss:hover { background: #666; }
+#btn-boss:active { transform: scale(.94); }
+#btn-boss svg { width: 26px; height: 26px; }
+#btn-boss .lbl { font-size: 10px; line-height: 1; }
+#sync-buttons + #btn-boss { margin-top: 0; }
+#sync-buttons[hidden] + #btn-boss { margin-top: auto; }
+#boss-screen { position: fixed; inset: 0; z-index: 1000; background: #000; }
+#btn-boss-restore { position: absolute; left: 4px; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); width: 42px; height: 58px; background: #111; border: 1px solid #222; border-radius: 8px; }
+#btn-boss-restore:hover { background: #1a1a1a; }
+.layer .lock { border: none; background: transparent; padding: 0 2px; font-size: 13px; line-height: 1; opacity: .35; }
+.layer .lock.on { opacity: 1; }
+.layer.locked .name { color: var(--muted); }
 .tab .mark { font-size: 11px; }
 .tab .mark.sent { color: #8fd18f; }
 .tab .mark.unsent { color: var(--accent); }

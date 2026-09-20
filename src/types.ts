@@ -17,7 +17,7 @@ export interface Shape {
   fill: Rgba | null;
 }
 
-interface LayerBase { id: string; name: string; visible: boolean; opacity: number; }
+interface LayerBase { id: string; name: string; visible: boolean; opacity: number; /** 書き込み禁止 */ locked?: boolean; }
 export interface BitmapLayer extends LayerBase { kind: 'bitmap'; canvas: HTMLCanvasElement; }
 export interface VectorLayer extends LayerBase { kind: 'vector'; shapes: Shape[]; }
 export type Layer = BitmapLayer | VectorLayer;
