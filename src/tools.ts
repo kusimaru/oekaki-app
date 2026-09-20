@@ -443,10 +443,12 @@ export class Tools {
   private strokeWidth(info: InputInfo): number {
     const s = this.app.options.size;
     if (!(this.app.options.pressure && info.pen)) return s;
-    // 筆圧 0 はセンサー未取得とみなして中間値に。急な変化は EMA で抑えて抜きを滑らかにする
-    const raw = info.pressure > 0 ? info.pressure : 0.5;
-    this.smoothP = this.smoothP < 0 ? raw : this.smoothP + (raw - this.smoothP) * 0.45;
-    return Math.max(0.5, s * Math.min(1.4, 0.12 + this.smoothP * 1.5));
+    // Apple Pencil は触れた直後と抜く瞬間に筆圧 0 を送るので、0 はそのまま最小の太さとして扱う
+    // (0 を中間値に置き換えると抜きの最後に太い点=ダマができる)
+    const raw = Math.min(1, Math.max(0, info.pressure));
+    if (this.smoothP < 0) this.smoothP = raw;
+    else this.smoothP += (raw - this.smoothP) * (raw < this.smoothP ? 0.7 : 0.4); // 抜き(減少)は速く追従
+    return Math.max(0.5, s * Math.min(1.5, 0.05 + this.smoothP * 1.45));
   }
 
   private opaqueColor(): string {
