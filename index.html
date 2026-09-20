@@ -43,13 +43,21 @@
   <div id="tabbar">
     <div id="tabs"></div>
     <button id="btn-tab-new" title="新規キャンバス">＋</button>
-    <div id="sync-buttons" hidden>
-      <button id="btn-send" title="このタブの絵で GitHub 側を上書きします">この端末の絵を送る</button>
-      <button id="btn-receive" title="GitHub の絵でこのタブを上書きします">GitHub の絵を受け取る</button>
-    </div>
   </div>
 
-  <aside id="toolbar" title="ドラッグで並べ替え"></aside>
+  <aside id="toolbar">
+    <div id="tools" title="ドラッグで並べ替え"></div>
+    <div id="sync-buttons" hidden>
+      <button id="btn-send" class="sync-send" title="この端末の絵を送る: このタブの絵で GitHub 側を上書きします">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 8a4 4 0 0 1 1 7.87"/><path d="M12 21v-9"/><path d="m8.5 15.5 3.5-3.5 3.5 3.5"/></svg>
+        <span class="lbl">送る</span>
+      </button>
+      <button id="btn-receive" class="sync-receive" title="GitHub の絵を受け取る: GitHub の絵でこのタブを上書きします">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 8a4 4 0 0 1 1 7.87"/><path d="M12 12v9"/><path d="m8.5 17.5 3.5 3.5 3.5-3.5"/></svg>
+        <span class="lbl">受け取る</span>
+      </button>
+    </div>
+  </aside>
 
   <main id="viewport"><canvas id="view"></canvas><div id="sync-banner" hidden></div></main>
 

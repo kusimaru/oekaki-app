@@ -326,7 +326,7 @@ let dragToolId: ToolId | null = null;
 
 /** ツールバーを生成。ボタンはドラッグ&ドロップで並べ替えでき、順序は localStorage に保存 */
 function renderToolbar() {
-  const bar = $('toolbar');
+  const bar = $('tools');
   bar.innerHTML = '';
   const clearDropMarks = () => bar.querySelectorAll('button').forEach(x => x.classList.remove('drop-before', 'drop-after'));
   const isBefore = (b: HTMLElement, clientY: number) => clientY < b.getBoundingClientRect().top + b.offsetHeight / 2;
@@ -376,7 +376,7 @@ const CURSORS: Partial<Record<ToolId, string>> = {
 };
 function setTool(t: ToolId) {
   tools.setTool(t);
-  document.querySelectorAll<HTMLButtonElement>('#toolbar button').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
+  document.querySelectorAll<HTMLButtonElement>('#tools button').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
   view.style.cursor = CURSORS[t] ?? 'crosshair';
 }
 
@@ -1095,8 +1095,8 @@ function setStatus(msg: string, cls: '' | 'ok' | 'err' = '') {
 function setSyncButtons(state: 'idle' | 'sending' | 'receiving') {
   const send = $<HTMLButtonElement>('btn-send'), recv = $<HTMLButtonElement>('btn-receive');
   send.disabled = recv.disabled = state !== 'idle';
-  send.textContent = state === 'sending' ? '送信中…' : 'この端末の絵を送る';
-  recv.textContent = state === 'receiving' ? '受信中…' : 'GitHub の絵を受け取る';
+  send.querySelector('.lbl')!.textContent = state === 'sending' ? '送信中' : '送る';
+  recv.querySelector('.lbl')!.textContent = state === 'receiving' ? '受信中' : '受け取る';
 }
 function timeAgo(iso: string): string {
   const sec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
