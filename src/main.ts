@@ -8,14 +8,15 @@ import { PROJECT_FILE, deserialize, serialize, type Manifest } from './project';
 import { ConflictError, GitHubSync, type GhConfig } from './github';
 import { ICONS } from './icons';
 import { IMAGE_EXT, PSD_EXT, importImage, importPsd } from './importers';
+import { DEFAULT_NOTEBOOK, DEFAULT_SECTION, KEEP_FILE, THUMB_FILE, canvasDir, cleanName, colorFor, makeThumb, parseTree, type RemoteCanvas, type RemoteScan } from './library';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ---------------- 状態 ----------------
-/** GitHub 同期の進行状態(タブごと) */
+/** GitHub 同期の進行状態(画像ごと) */
 interface SyncState {
   lastSha: string | null;
-  /** 一度でも pull/push に成功していれば true(自動プッシュの条件) */
+  /** 一度でも pull/push に成功していれば true */
   synced: boolean;
   dirty: boolean;
   lastEdit: number;
@@ -26,7 +27,7 @@ interface SyncState {
   remoteChanged: boolean;
   /** GitHub 側を最後に更新した端末と日時 */
   lastInfo: { device: string; date: string } | null;
-  /** まだつながっていないタブについて、GitHub に同名の絵があるか最後に調べた時刻 */
+  /** まだつながっていない画像について、GitHub に同名の絵があるか最後に調べた時刻 */
   checkedAt: number;
   knownPaths: Set<string>;
 }
@@ -35,11 +36,22 @@ const newSyncState = (): SyncState => ({ lastSha: null, synced: false, dirty: fa
 const DEVICE = /iPad|iPhone/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ? 'iPad'
   : /Android/.test(navigator.userAgent) ? 'Android' : 'PC';
 
-/** 開いているキャンバス 1 枚分の状態。名前は GitHub のフォルダ名を兼ねる */
+/**
+ * ライブラリ内の画像 1 枚。開いているものがタブになる(open=true)。
+ * 閉じている画像は doc を持たず、開くときに端末内の保存から読み込む。
+ * ノートブック / セクション / 名前 がそのまま GitHub のフォルダになる。
+ */
 interface Tab {
   id: string;
   name: string;
-  doc: Doc;
+  notebook: string;
+  section: string;
+  open: boolean;
+  doc: Doc | null;
+  /** 一覧用サムネイル(data URL) */
+  thumb: string | null;
+  /** 旧形式(トップ直下)から開いた画像の、GitHub 上の現在のフォルダ。送ると新しい場所に移る */
+  remoteDir?: string;
   history: History;
   zoom: number;
   panX: number;
@@ -50,6 +62,14 @@ interface Tab {
 }
 let tabs: Tab[] = [];
 let cur!: Tab;
+const openTabs = () => tabs.filter(t => t.open);
+const tabDir = (t: Tab) => canvasDir(t.notebook, t.section, t.name);
+
+/** 画像のない(空の)ノートブック / セクションを覚えておく */
+interface Structure { notebooks: string[]; sections: { notebook: string; name: string }[] }
+let structure: Structure = { notebooks: [DEFAULT_NOTEBOOK], sections: [{ notebook: DEFAULT_NOTEBOOK, name: DEFAULT_SECTION }] };
+/** GitHub 上の一覧(最後に取得したもの) */
+let remoteScan: RemoteScan | null = null;
 
 // 以下はアクティブなタブの内容を映した変数(タブ切り替え時に入れ替える)
 let doc: Doc = createDoc('bitmap', 1024, 768);
@@ -448,7 +468,7 @@ function zoomCenter(factor: number) {
 }
 window.addEventListener('keydown', ev => {
   const t = ev.target as HTMLElement;
-  if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || t.closest('dialog')) return;
+  if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || t.closest('dialog') || !$('library').hidden) return;
   if (ev.code === 'Space') { spaceDown = true; ev.preventDefault(); return; }
   const k = ev.key.toLowerCase();
   const mod = ev.ctrlKey || ev.metaKey;
@@ -777,11 +797,12 @@ $('btn-layer-rename').addEventListener('click', () => {
   if (n && n.trim()) { l.name = n.trim(); markDirty(); renderLayers(); }
 });
 
-// ---------------- タブ(複数キャンバス) ----------------
-/** 同名のタブがあれば末尾に番号を付ける(名前は GitHub のフォルダ名になるため一意にする) */
-function uniqueTabName(base: string, except?: Tab): string {
-  const clean = (base.trim() || 'drawing').replace(/[\\/:*?"<>|]/g, '_');
-  const used = new Set(tabs.filter(t => t !== except).map(t => t.name));
+// ---------------- タブ(開いている画像) ----------------
+/** 同じセクション内で同名があれば末尾に番号を付ける(名前は GitHub のフォルダ名になるため一意にする) */
+function uniqueName(base: string, notebook: string, section: string, except?: Tab): string {
+  const clean = cleanName(base, 'drawing');
+  const used = new Set(tabs.filter(t => t !== except && t.notebook === notebook && t.section === section).map(t => t.name));
+  for (const r of remoteScan?.canvases ?? []) if (r.notebook === notebook && r.section === section && !tabs.some(t => t.notebook === notebook && t.section === section && t.name === r.name)) used.add(r.name);
   if (!used.has(clean)) return clean;
   const m = clean.match(/^(.*?)(\d+)$/);
   const stem = m ? m[1] : clean;
@@ -789,8 +810,11 @@ function uniqueTabName(base: string, except?: Tab): string {
   while (used.has(stem + n)) n++;
   return stem + n;
 }
-function createTab(d: Doc, name: string, id = uid()): Tab {
-  return { id, name: uniqueTabName(name), doc: d, history: new History(), zoom: 0, panX: 0, panY: 0, toolState: null, selectedLayerIds: new Set(), sync: newSyncState() };
+function createTab(d: Doc | null, name: string, notebook: string, section: string, id = uid()): Tab {
+  return {
+    id, name, notebook, section, open: false, doc: d, thumb: null,
+    history: new History(), zoom: 0, panX: 0, panY: 0, toolState: null, selectedLayerIds: new Set(), sync: newSyncState(),
+  };
 }
 /** 現在のタブに、表示状態を書き戻す */
 function stashCurrentTab() {
@@ -802,7 +826,9 @@ function stashCurrentTab() {
   cur.toolState = tools.getState();
 }
 function activateTab(tab: Tab) {
+  if (!tab.doc) return;
   cur = tab;
+  tab.open = true;
   doc = tab.doc;
   history = tab.history;
   selectedLayerIds = tab.selectedLayerIds;
@@ -815,52 +841,90 @@ function activateTab(tab: Tab) {
   updateSyncStatus();
   afterEdit();
 }
-function addTab(d: Doc, name: string, opts: { activate?: boolean; id?: string } = {}): Tab {
-  const tab = createTab(d, name, opts.id);
+/** 新しい画像をライブラリに加えて開く */
+function addTab(d: Doc, name: string, notebook: string, section: string, opts: { activate?: boolean; id?: string } = {}): Tab {
+  notebook = cleanName(notebook, DEFAULT_NOTEBOOK);
+  section = cleanName(section, DEFAULT_SECTION);
+  const tab = createTab(d, uniqueName(name, notebook, section), notebook, section, opts.id);
   tabs.push(tab);
+  ensureStructure(notebook, section);
   if (opts.activate ?? true) { stashCurrentTab(); activateTab(tab); }
   else renderTabs();
   return tab;
 }
-function switchTab(id: string) {
-  const tab = tabs.find(t => t.id === id);
-  if (!tab || tab === cur) return;
+/** ライブラリの画像を開く(閉じていれば端末内の保存から読み込み、なければ GitHub から受け取る) */
+async function openTab(tab: Tab): Promise<boolean> {
+  if (!tab.doc) {
+    const saved = await dbGet<{ manifest: Manifest }>(tabKey(tab.id));
+    if (saved) tab.doc = await deserialize(saved.manifest, async () => null);
+  }
+  if (!tab.doc && sync.gh) {
+    await pull(tab, true);
+  }
+  if (!tab.doc) { setStatus(`「${tab.name}」を開けませんでした(端末内にも GitHub にもデータがありません)`, 'err'); return false; }
+  if (tab === cur) return true;
   stashCurrentTab();
   activateTab(tab);
   saveTabIndex();
+  return true;
+}
+function switchTab(id: string) {
+  const tab = tabs.find(t => t.id === id);
+  if (tab) openTab(tab);
 }
 function cycleTab(dir: 1 | -1) {
-  if (tabs.length < 2) return;
-  const i = tabs.indexOf(cur);
-  switchTab(tabs[(i + dir + tabs.length) % tabs.length].id);
+  const list = openTabs();
+  if (list.length < 2) return;
+  const i = list.indexOf(cur);
+  switchTab(list[(i + dir + list.length) % list.length].id);
 }
-async function closeTab(id: string) {
+/** タブを閉じる(画像はライブラリに残る) */
+function closeTab(id: string) {
   const tab = tabs.find(t => t.id === id);
-  if (!tab) return;
-  if (tab.sync.dirty && sync.gh && !confirm(`「${tab.name}」には GitHub に送っていない変更があります。閉じますか?`)) return;
-  if (!sync.gh && !confirm(`「${tab.name}」を閉じますか?(この端末の自動保存からも消えます。残したい場合は先に「保存」してください)`)) return;
-  const idx = tabs.indexOf(tab);
-  tabs = tabs.filter(t => t !== tab);
-  await dbDelete(tabKey(tab.id)).catch(() => {});
-  if (tabs.length === 0) {
-    addTab(createDoc('bitmap', 1024, 768), 'drawing1');
-  } else if (tab === cur) {
-    cur = undefined as unknown as Tab; // stash させない
-    activateTab(tabs[Math.min(idx, tabs.length - 1)]);
+  if (!tab || !tab.open) return;
+  const list = openTabs();
+  if (list.length <= 1) { setStatus('最後の画像は閉じられません。ライブラリから別の画像を開いてから閉じてください'); return; }
+  if (tab === cur) stashCurrentTab();
+  tab.open = false;
+  tab.doc = null; // メモリを解放。端末内の保存から再読み込みできる
+  tab.history.clear();
+  if (tab === cur) {
+    const idx = list.indexOf(tab);
+    const next = list.filter(t => t !== tab)[Math.min(idx, list.length - 2)];
+    cur = undefined as unknown as Tab;
+    activateTab(next);
   } else renderTabs();
   saveTabIndex();
 }
-function renameTab(tab: Tab, name: string) {
-  const n = uniqueTabName(name, tab);
-  if (n === tab.name) return;
-  tab.name = n;
-  // フォルダ名が変わるのでリモートとの対応をやり直す
-  tab.sync = { ...newSyncState(), dirty: tab.sync.dirty, lastEdit: tab.sync.lastEdit };
-  renderTabs();
-  updateSyncStatus();
+/** 画像をライブラリから完全に削除する(端末内と GitHub の両方) */
+async function deleteCanvas(tab: Tab) {
+  if (!confirm(`「${tab.name}」を削除します。端末内と GitHub の両方から消えます。よろしいですか?`)) return;
+  if (tab.open && openTabs().length <= 1) { addTab(createDoc('bitmap', 1024, 768), 'drawing1', tab.notebook, tab.section); }
+  if (tab.open) closeTab(tab.id);
+  tabs = tabs.filter(t => t !== tab);
+  await dbDelete(tabKey(tab.id)).catch(() => {});
   saveTabIndex();
-  scheduleAutosave();
-  autoSyncTick(); // 新しい名前の絵が GitHub にあればすぐ受け取る
+  if (sync.gh && (tab.sync.synced || tab.remoteDir)) {
+    const dir = tab.remoteDir ?? tabDir(tab);
+    await libraryRemote(g => g.movePaths(p => (p.startsWith(dir + '/') ? null : undefined), `delete ${dir} from ${DEVICE}`), `「${tab.name}」を GitHub からも削除しました`);
+  }
+  renderLibrary();
+}
+/** 名前・場所を変える。GitHub 上のフォルダも移す */
+async function relocateCanvas(tab: Tab, name: string, notebook: string, section: string) {
+  notebook = cleanName(notebook, DEFAULT_NOTEBOOK);
+  section = cleanName(section, DEFAULT_SECTION);
+  const n = uniqueName(name, notebook, section, tab);
+  if (n === tab.name && notebook === tab.notebook && section === tab.section) return;
+  const oldDir = tab.remoteDir ?? tabDir(tab);
+  tab.name = n; tab.notebook = notebook; tab.section = section;
+  ensureStructure(notebook, section);
+  const newDir = tabDir(tab);
+  if (sync.gh && (tab.sync.synced || tab.remoteDir)) {
+    const sha = await libraryRemote(g => g.movePaths(p => (p.startsWith(oldDir + '/') ? newDir + p.slice(oldDir.length) : undefined), `move ${oldDir} -> ${newDir} from ${DEVICE}`), `GitHub 上でも「${newDir}」へ移しました`);
+    if (sha) { tab.sync.lastSha = sha; tab.remoteDir = undefined; tab.sync.knownPaths = new Set([...tab.sync.knownPaths].map(p => (p.startsWith(oldDir + '/') ? newDir + p.slice(oldDir.length) : p))); }
+  }
+  renderTabs(); updateSyncStatus(); saveTabIndex(); renderLibrary();
 }
 /** 今のドキュメントを差し替える(GitHub からの取得など) */
 function replaceTabDoc(tab: Tab, d: Doc) {
@@ -877,10 +941,13 @@ function replaceTabDoc(tab: Tab, d: Doc) {
 function renderTabs() {
   const el = $('tabs');
   el.innerHTML = '';
-  for (const t of tabs) {
+  for (const t of openTabs()) {
     const b = document.createElement('div');
     b.className = 'tab' + (t === cur ? ' active' : '');
     b.dataset.id = t.id;
+    const dot = document.createElement('span');
+    dot.className = 'sdot';
+    dot.style.background = colorFor(t.section);
     const name = document.createElement('span');
     name.className = 'tab-name';
     name.textContent = t.name;
@@ -895,17 +962,17 @@ function renderTabs() {
       else if (s.dirty) { dirty.textContent = '●'; dirty.classList.add('unsent'); state = '未送信'; }
       else if (s.synced) { dirty.textContent = '✓'; dirty.classList.add('sent'); state = '送信済み'; }
     }
-    b.title = `${t.name}${state ? `(${state})` : ''}\nダブルタップで名前を変更`;
+    b.title = `${t.notebook} › ${t.section} › ${t.name}${state ? `(${state})` : ''}\nダブルタップで名前を変更`;
     const close = document.createElement('button');
     close.className = 'close';
     close.textContent = '×';
-    close.title = '閉じる';
+    close.title = '閉じる(ライブラリには残ります)';
     close.addEventListener('click', ev => { ev.stopPropagation(); closeTab(t.id); });
-    b.append(name, dirty, close);
+    b.append(dot, name, dirty, close);
     b.addEventListener('click', () => switchTab(t.id));
     b.addEventListener('dblclick', () => {
-      const n = prompt('キャンバスの名前(GitHub のフォルダ名になります)', t.name);
-      if (n && n.trim()) renameTab(t, n.trim());
+      const n = prompt('画像の名前(GitHub のフォルダ名になります)', t.name);
+      if (n && n.trim()) relocateCanvas(t, n.trim(), t.notebook, t.section);
     });
     el.appendChild(b);
   }
@@ -913,22 +980,373 @@ function renderTabs() {
 }
 $('btn-tab-new').addEventListener('click', () => openNewDialog());
 
+// ---------------- ライブラリ(ノートブック › セクション › 画像) ----------------
+const STRUCTURE_KEY = 'oekaki.structure';
+const REMOTE_SCAN_KEY = 'oekaki.remoteScan';
+let libNotebook = DEFAULT_NOTEBOOK;
+let libSection = DEFAULT_SECTION;
+
+function ensureStructure(notebook: string, section: string) {
+  let changed = false;
+  if (!structure.notebooks.includes(notebook)) { structure.notebooks.push(notebook); changed = true; }
+  if (!structure.sections.some(s => s.notebook === notebook && s.name === section)) { structure.sections.push({ notebook, name: section }); changed = true; }
+  if (changed) dbPut(STRUCTURE_KEY, structure).catch(() => {});
+}
+/** 端末内 + GitHub の一覧を合わせた全ノートブック */
+function allNotebooks(): string[] {
+  const set = new Set<string>([...structure.notebooks, ...tabs.map(t => t.notebook), ...(remoteScan?.notebooks ?? [])]);
+  return [...set].sort((a, b) => (a === DEFAULT_NOTEBOOK ? -1 : b === DEFAULT_NOTEBOOK ? 1 : a.localeCompare(b, 'ja')));
+}
+function allSections(notebook: string): string[] {
+  const set = new Set<string>([
+    ...structure.sections.filter(s => s.notebook === notebook).map(s => s.name),
+    ...tabs.filter(t => t.notebook === notebook).map(t => t.section),
+    ...(remoteScan?.sections ?? []).filter(s => s.notebook === notebook).map(s => s.name),
+  ]);
+  return [...set].sort((a, b) => (a === DEFAULT_SECTION ? -1 : b === DEFAULT_SECTION ? 1 : a.localeCompare(b, 'ja')));
+}
+interface LibEntry { key: string; name: string; local: Tab | null; remote: RemoteCanvas | null; }
+function canvasesIn(notebook: string, section: string): LibEntry[] {
+  const map = new Map<string, LibEntry>();
+  for (const t of tabs) if (t.notebook === notebook && t.section === section) map.set(t.name, { key: t.name, name: t.name, local: t, remote: null });
+  for (const r of remoteScan?.canvases ?? []) {
+    if (r.notebook !== notebook || r.section !== section) continue;
+    const e = map.get(r.name);
+    if (e) e.remote = r;
+    else map.set(r.name, { key: r.name, name: r.name, local: null, remote: r });
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+}
+const countIn = (notebook: string, section?: string) =>
+  (section === undefined ? allSections(notebook).reduce((n, s) => n + canvasesIn(notebook, s).length, 0) : canvasesIn(notebook, section).length);
+
+function openLibrary() {
+  stashCurrentTab();
+  libNotebook = cur?.notebook ?? DEFAULT_NOTEBOOK;
+  libSection = cur?.section ?? DEFAULT_SECTION;
+  $('library').hidden = false;
+  renderLibrary();
+  if (sync.gh) scanRemote();
+}
+function closeLibrary() { $('library').hidden = true; requestRender(); }
+$('btn-library').addEventListener('click', openLibrary);
+$('lib-close').addEventListener('click', closeLibrary);
+$('lib-refresh').addEventListener('click', () => { if (sync.gh) scanRemote(true); else $('lib-status').textContent = 'GitHub が未設定です'; });
+
+/** 「⋯」メニュー(prompt / confirm ベースの簡易版) */
+function moreButton(actions: { label: string; run: () => void }[]): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.className = 'more';
+  b.textContent = '⋯';
+  b.title = 'メニュー';
+  b.addEventListener('click', ev => {
+    ev.stopPropagation();
+    const choice = prompt(actions.map((a, i) => `${i + 1}: ${a.label}`).join('\n') + '\n番号を入力', '');
+    const i = Number(choice) - 1;
+    if (actions[i]) actions[i].run();
+  });
+  return b;
+}
+
+function renderLibrary() {
+  if ($('library').hidden) return;
+  const nbs = allNotebooks();
+  if (!nbs.includes(libNotebook)) libNotebook = nbs[0] ?? DEFAULT_NOTEBOOK;
+  const secs = allSections(libNotebook);
+  if (!secs.includes(libSection)) libSection = secs[0] ?? DEFAULT_SECTION;
+
+  const nbList = $('lib-nb-list');
+  nbList.innerHTML = '';
+  for (const nb of nbs) {
+    const row = document.createElement('div');
+    row.className = 'lib-item' + (nb === libNotebook ? ' active' : '');
+    const dot = document.createElement('span'); dot.className = 'dot'; dot.style.background = colorFor(nb);
+    const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = nb;
+    const cnt = document.createElement('span'); cnt.className = 'cnt'; cnt.textContent = String(countIn(nb));
+    row.append(dot, nm, cnt, moreButton([
+      { label: '名前を変更', run: () => { const n = prompt('ノートブック名', nb); if (n && n.trim()) renameNotebook(nb, n.trim()); } },
+      { label: '削除', run: () => deleteNotebook(nb) },
+    ]));
+    row.addEventListener('click', () => { libNotebook = nb; libSection = allSections(nb)[0] ?? DEFAULT_SECTION; renderLibrary(); });
+    nbList.appendChild(row);
+  }
+
+  const secList = $('lib-sec-list');
+  secList.innerHTML = '';
+  for (const sec of secs) {
+    const row = document.createElement('div');
+    row.className = 'lib-item' + (sec === libSection ? ' active' : '');
+    const dot = document.createElement('span'); dot.className = 'dot'; dot.style.background = colorFor(sec);
+    const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = sec;
+    const cnt = document.createElement('span'); cnt.className = 'cnt'; cnt.textContent = String(countIn(libNotebook, sec));
+    row.append(dot, nm, cnt, moreButton([
+      { label: '名前を変更', run: () => { const n = prompt('セクション名', sec); if (n && n.trim()) renameSection(libNotebook, sec, n.trim()); } },
+      { label: '削除', run: () => deleteSection(libNotebook, sec) },
+    ]));
+    row.addEventListener('click', () => { libSection = sec; renderLibrary(); });
+    secList.appendChild(row);
+  }
+
+  $('lib-crumb').textContent = `${libNotebook} › ${libSection}`;
+  const grid = $('lib-grid');
+  grid.innerHTML = '';
+  const entries = canvasesIn(libNotebook, libSection);
+  if (!entries.length) {
+    const e = document.createElement('div');
+    e.className = 'lib-empty';
+    e.textContent = 'このセクションにはまだ画像がありません。「＋ 新規画像」で作るか、画像ファイルをキャンバスにドロップしてください。';
+    grid.appendChild(e);
+  }
+  for (const en of entries) {
+    const card = document.createElement('div');
+    card.className = 'lib-card' + (en.local?.open ? ' open' : '');
+    const th = document.createElement('div');
+    th.className = 'thumb';
+    const img = document.createElement('img');
+    const local = en.local;
+    if (local?.thumb) img.src = local.thumb;
+    else if (local?.doc) { thumbDataUrl(local).then(u => { img.src = u; }); }
+    else if (en.remote?.thumbSha) { remoteThumb(en.remote.thumbSha).then(u => { if (u) img.src = u; }); }
+    if (local?.thumb || local?.doc || en.remote?.thumbSha) th.appendChild(img);
+    else { const ph = document.createElement('span'); ph.className = 'ph'; ph.textContent = 'サムネイルなし'; th.appendChild(ph); }
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = en.name; nm.title = en.name;
+    const badge = document.createElement('span');
+    badge.className = 'badge' + (!local ? ' cloud' : '');
+    badge.textContent = !local ? '☁ GitHub' : local.open ? '開いています' : (local.sync.dirty && sync.gh ? '● 未送信' : '');
+    const actions: { label: string; run: () => void }[] = [];
+    if (local) {
+      actions.push({ label: '名前を変更', run: () => { const n = prompt('画像の名前', local.name); if (n && n.trim()) relocateCanvas(local, n.trim(), local.notebook, local.section); } });
+      actions.push({ label: '別のセクションへ移動', run: () => openMoveDialog(local) });
+      actions.push({ label: '削除', run: () => deleteCanvas(local) });
+    } else if (en.remote) {
+      actions.push({ label: 'GitHub から削除', run: () => deleteRemoteOnly(en.remote!) });
+    }
+    meta.append(nm, badge, moreButton(actions));
+    card.append(th, meta);
+    card.addEventListener('click', () => openFromLibrary(en));
+    grid.appendChild(card);
+  }
+}
+async function openFromLibrary(en: LibEntry) {
+  let tab = en.local;
+  if (!tab) {
+    const r = en.remote!;
+    tab = createTab(null, r.name, r.notebook, r.section);
+    if (r.legacy) tab.remoteDir = r.dir;
+    tabs.push(tab);
+  }
+  closeLibrary();
+  const ok = await openTab(tab);
+  if (!ok && !en.local) tabs = tabs.filter(t => t !== tab);
+  renderTabs();
+}
+$('lib-nb-add').addEventListener('click', async () => {
+  const n = prompt('新しいノートブックの名前');
+  if (!n || !n.trim()) return;
+  const nb = cleanName(n, DEFAULT_NOTEBOOK);
+  ensureStructure(nb, DEFAULT_SECTION);
+  libNotebook = nb; libSection = DEFAULT_SECTION;
+  renderLibrary();
+  await keepRemote(nb, DEFAULT_SECTION);
+});
+$('lib-sec-add').addEventListener('click', async () => {
+  const n = prompt(`「${libNotebook}」に追加するセクションの名前`);
+  if (!n || !n.trim()) return;
+  const sec = cleanName(n, DEFAULT_SECTION);
+  ensureStructure(libNotebook, sec);
+  libSection = sec;
+  renderLibrary();
+  await keepRemote(libNotebook, sec);
+});
+$('lib-img-add').addEventListener('click', () => { closeLibrary(); openNewDialog(libNotebook, libSection); });
+
+/** GitHub に空のセクションを見えるようにする(.keep を置く) */
+async function keepRemote(notebook: string, section: string) {
+  if (!sync.gh) return;
+  await libraryRemote(g => g.commitChanges([{ path: `${notebook}/${section}/${KEEP_FILE}`, content: '' }], `add section ${notebook}/${section} from ${DEVICE}`), `GitHub にも「${notebook} › ${section}」を作りました`);
+}
+async function renameNotebook(from: string, to: string) {
+  to = cleanName(to, DEFAULT_NOTEBOOK);
+  if (to === from) return;
+  if (allNotebooks().includes(to)) { alert('同じ名前のノートブックがあります'); return; }
+  for (const t of tabs) if (t.notebook === from) t.notebook = to;
+  structure.notebooks = structure.notebooks.map(n => (n === from ? to : n));
+  structure.sections.forEach(s => { if (s.notebook === from) s.notebook = to; });
+  dbPut(STRUCTURE_KEY, structure).catch(() => {});
+  if (remoteScan) { remoteScan.notebooks = remoteScan.notebooks.map(n => (n === from ? to : n)); remoteScan.sections.forEach(s => { if (s.notebook === from) s.notebook = to; }); remoteScan.canvases.forEach(c => { if (c.notebook === from && !c.legacy) { c.notebook = to; c.dir = canvasDir(to, c.section, c.name); } }); }
+  libNotebook = to;
+  renderTabs(); renderLibrary(); saveTabIndex();
+  if (sync.gh) await libraryRemote(g => g.movePaths(p => (p.startsWith(from + '/') ? to + p.slice(from.length) : undefined), `rename notebook ${from} -> ${to} from ${DEVICE}`), `GitHub 上でも「${to}」に変更しました`, true);
+}
+async function renameSection(notebook: string, from: string, to: string) {
+  to = cleanName(to, DEFAULT_SECTION);
+  if (to === from) return;
+  if (allSections(notebook).includes(to)) { alert('同じ名前のセクションがあります'); return; }
+  for (const t of tabs) if (t.notebook === notebook && t.section === from) t.section = to;
+  structure.sections.forEach(s => { if (s.notebook === notebook && s.name === from) s.name = to; });
+  dbPut(STRUCTURE_KEY, structure).catch(() => {});
+  if (remoteScan) { remoteScan.sections.forEach(s => { if (s.notebook === notebook && s.name === from) s.name = to; }); remoteScan.canvases.forEach(c => { if (c.notebook === notebook && c.section === from && !c.legacy) { c.section = to; c.dir = canvasDir(notebook, to, c.name); } }); }
+  libSection = to;
+  renderTabs(); renderLibrary(); saveTabIndex();
+  const oldP = `${notebook}/${from}/`, newP = `${notebook}/${to}/`;
+  if (sync.gh) await libraryRemote(g => g.movePaths(p => (p.startsWith(oldP) ? newP + p.slice(oldP.length) : undefined), `rename section ${oldP} -> ${newP} from ${DEVICE}`), `GitHub 上でも「${to}」に変更しました`, true);
+}
+async function deleteNotebook(nb: string) {
+  const n = countIn(nb);
+  if (allNotebooks().length <= 1) { alert('最後のノートブックは削除できません'); return; }
+  if (!confirm(`ノートブック「${nb}」を削除します${n ? `(中の画像 ${n} 枚も端末と GitHub から消えます)` : ''}。よろしいですか?`)) return;
+  await removeCanvases(t => t.notebook === nb);
+  structure.notebooks = structure.notebooks.filter(x => x !== nb);
+  structure.sections = structure.sections.filter(s => s.notebook !== nb);
+  dbPut(STRUCTURE_KEY, structure).catch(() => {});
+  if (remoteScan) { remoteScan.notebooks = remoteScan.notebooks.filter(x => x !== nb); remoteScan.sections = remoteScan.sections.filter(s => s.notebook !== nb); remoteScan.canvases = remoteScan.canvases.filter(c => c.notebook !== nb); }
+  renderLibrary();
+  if (sync.gh) await libraryRemote(g => g.movePaths(p => (p.startsWith(nb + '/') ? null : undefined), `delete notebook ${nb} from ${DEVICE}`), `GitHub からも「${nb}」を削除しました`, true);
+}
+async function deleteSection(nb: string, sec: string) {
+  const n = countIn(nb, sec);
+  if (!confirm(`セクション「${sec}」を削除します${n ? `(中の画像 ${n} 枚も端末と GitHub から消えます)` : ''}。よろしいですか?`)) return;
+  await removeCanvases(t => t.notebook === nb && t.section === sec);
+  structure.sections = structure.sections.filter(s => !(s.notebook === nb && s.name === sec));
+  dbPut(STRUCTURE_KEY, structure).catch(() => {});
+  if (remoteScan) { remoteScan.sections = remoteScan.sections.filter(s => !(s.notebook === nb && s.name === sec)); remoteScan.canvases = remoteScan.canvases.filter(c => !(c.notebook === nb && c.section === sec)); }
+  renderLibrary();
+  const p0 = `${nb}/${sec}/`;
+  if (sync.gh) await libraryRemote(g => g.movePaths(p => (p.startsWith(p0) ? null : undefined), `delete section ${p0} from ${DEVICE}`), `GitHub からも「${sec}」を削除しました`, true);
+}
+/** 条件に合う端末内の画像を消す(開いているものは閉じる) */
+async function removeCanvases(pred: (t: Tab) => boolean) {
+  const victims = tabs.filter(pred);
+  if (!victims.length) return;
+  if (openTabs().every(t => pred(t))) {
+    const keep = tabs.find(t => !pred(t) && t.doc) ?? null;
+    if (keep) { await openTab(keep); }
+    else addTab(createDoc('bitmap', 1024, 768), 'drawing1', DEFAULT_NOTEBOOK, DEFAULT_SECTION);
+  }
+  for (const t of victims) { if (t.open) { if (openTabs().length > 1) closeTab(t.id); } }
+  tabs = tabs.filter(t => !pred(t));
+  for (const t of victims) await dbDelete(tabKey(t.id)).catch(() => {});
+  saveTabIndex();
+  renderTabs();
+}
+async function deleteRemoteOnly(r: RemoteCanvas) {
+  if (!confirm(`GitHub 上の「${r.name}」を削除します。よろしいですか?`)) return;
+  if (remoteScan) remoteScan.canvases = remoteScan.canvases.filter(c => c !== r);
+  renderLibrary();
+  await libraryRemote(g => g.movePaths(p => (p.startsWith(r.dir + '/') ? null : undefined), `delete ${r.dir} from ${DEVICE}`), `GitHub から「${r.name}」を削除しました`);
+}
+/** ライブラリ操作を GitHub に反映する共通処理(進行表示とエラー表示) */
+async function libraryRemote(fn: (g: GitHubSync) => Promise<string | null>, okMsg: string, rescan = false): Promise<string | null> {
+  if (!sync.gh || !sync.cfg) return null;
+  const st = $('lib-status');
+  st.textContent = 'GitHub に反映中…';
+  try {
+    const sha = await fn(new GitHubSync({ ...sync.cfg, dir: '' }));
+    st.textContent = okMsg;
+    setStatus(okMsg, 'ok');
+    if (rescan) await scanRemote(true);
+    return sha;
+  } catch (e) {
+    console.error(e);
+    st.textContent = 'GitHub への反映に失敗: ' + (e as Error).message;
+    setStatus('GitHub への反映に失敗: ' + (e as Error).message, 'err');
+    return null;
+  }
+}
+let scanning = false;
+/** GitHub の一覧を取り直す */
+async function scanRemote(force = false) {
+  if (!sync.gh || !sync.cfg || scanning) return;
+  if (!force && remoteScan && Date.now() - (remoteScanAt || 0) < 20_000) return;
+  scanning = true;
+  const st = $('lib-status');
+  st.textContent = 'GitHub の一覧を取得中…';
+  try {
+    const g = new GitHubSync({ ...sync.cfg, dir: '' });
+    const { sha, files } = await g.listTree();
+    remoteScan = { headSha: sha, ...parseTree(files) };
+    remoteScanAt = Date.now();
+    dbPut(REMOTE_SCAN_KEY, { at: remoteScanAt, scan: remoteScan }).catch(() => {});
+    st.textContent = `GitHub の一覧を更新しました(画像 ${remoteScan.canvases.length} 枚)`;
+  } catch (e) {
+    st.textContent = 'GitHub の一覧を取得できません: ' + (e as Error).message;
+  } finally {
+    scanning = false;
+    renderLibrary();
+  }
+}
+let remoteScanAt = 0;
+const thumbCache = new Map<string, string>();
+async function remoteThumb(sha: string): Promise<string | null> {
+  if (thumbCache.has(sha)) return thumbCache.get(sha)!;
+  const cached = await dbGet<string>(`oekaki.thumb.${sha}`).catch(() => undefined);
+  if (cached) { thumbCache.set(sha, cached); return cached; }
+  if (!sync.cfg) return null;
+  try {
+    const bytes = await new GitHubSync({ ...sync.cfg, dir: '' }).getBlobBytes(sha);
+    const url = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.onerror = () => rej(r.error); r.readAsDataURL(new Blob([bytes as BlobPart], { type: 'image/png' })); });
+    thumbCache.set(sha, url);
+    dbPut(`oekaki.thumb.${sha}`, url).catch(() => {});
+    return url;
+  } catch { return null; }
+}
+async function thumbDataUrl(tab: Tab): Promise<string> {
+  if (!tab.doc) return tab.thumb ?? '';
+  const blob = await makeThumb(compositeToCanvas(tab.doc));
+  const url = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
+  tab.thumb = url;
+  return url;
+}
+
+const dlgMove = $<HTMLDialogElement>('dlg-move');
+let moveTarget: Tab | null = null;
+function fillDatalists() {
+  $('nb-list').innerHTML = allNotebooks().map(n => `<option value="${n.replace(/"/g, '&quot;')}">`).join('');
+  const nb = $<HTMLInputElement>('new-notebook').value || $<HTMLInputElement>('move-notebook').value || libNotebook;
+  $('sec-list').innerHTML = allSections(nb).map(n => `<option value="${n.replace(/"/g, '&quot;')}">`).join('');
+}
+$<HTMLInputElement>('new-notebook').addEventListener('input', fillDatalists);
+$<HTMLInputElement>('move-notebook').addEventListener('input', fillDatalists);
+function openMoveDialog(tab: Tab) {
+  moveTarget = tab;
+  $<HTMLInputElement>('move-notebook').value = tab.notebook;
+  $<HTMLInputElement>('move-section').value = tab.section;
+  fillDatalists();
+  dlgMove.showModal();
+}
+$('move-cancel').addEventListener('click', () => dlgMove.close());
+$('move-ok').addEventListener('click', () => {
+  if (!moveTarget) return;
+  relocateCanvas(moveTarget, moveTarget.name, $<HTMLInputElement>('move-notebook').value, $<HTMLInputElement>('move-section').value);
+  dlgMove.close();
+});
+
 // ---------------- ドキュメント ----------------
 const dlgNew = $<HTMLDialogElement>('dlg-new');
-function openNewDialog() {
-  $<HTMLInputElement>('new-name').value = uniqueTabName(`drawing${tabs.length + 1}`);
+function openNewDialog(notebook?: string, section?: string) {
+  const nb = notebook ?? cur?.notebook ?? DEFAULT_NOTEBOOK;
+  const sec = section ?? cur?.section ?? DEFAULT_SECTION;
+  $<HTMLInputElement>('new-notebook').value = nb;
+  $<HTMLInputElement>('new-section').value = sec;
+  fillDatalists();
+  $<HTMLInputElement>('new-name').value = uniqueName(`drawing${tabs.length + 1}`, nb, sec);
   dlgNew.showModal();
 }
-$('btn-new').addEventListener('click', openNewDialog);
+$('btn-new').addEventListener('click', () => openNewDialog());
 $('new-cancel').addEventListener('click', () => dlgNew.close());
-$('new-ok').addEventListener('click', () => {
+$('new-ok').addEventListener('click', async () => {
   const w = Math.max(1, Math.min(8192, Number($<HTMLInputElement>('new-width').value) || 1024));
   const h = Math.max(1, Math.min(8192, Number($<HTMLInputElement>('new-height').value) || 768));
   const kind = $<HTMLSelectElement>('new-kind').value as DocKind;
-  addTab(createDoc(kind, w, h), $<HTMLInputElement>('new-name').value);
+  const nb = $<HTMLInputElement>('new-notebook').value, sec = $<HTMLInputElement>('new-section').value;
+  const isNewSection = !allSections(cleanName(nb, DEFAULT_NOTEBOOK)).includes(cleanName(sec, DEFAULT_SECTION));
+  const tab = addTab(createDoc(kind, w, h), $<HTMLInputElement>('new-name').value, nb, sec);
   dlgNew.close();
-  saveTab(cur);
+  saveTab(tab);
   saveTabIndex();
+  if (isNewSection) await keepRemote(tab.notebook, tab.section);
   autoSyncTick(); // 同じ名前の絵が GitHub にあればすぐ受け取る
 });
 
@@ -948,11 +1366,11 @@ async function openFile(f: File) {
     else if (PSD_EXT.test(f.name)) d = await importPsd(f);
     else if (IMAGE_EXT.test(f.name) || f.type.startsWith('image/')) d = await importImage(f);
     else throw new Error('対応していないファイル形式です(JSON / PNG / JPEG / WebP / GIF / BMP / SVG / PSD)');
-    const tab = addTab(d, name);
+    const tab = addTab(d, name, cur?.notebook ?? DEFAULT_NOTEBOOK, cur?.section ?? DEFAULT_SECTION);
     tab.sync.dirty = true;
     saveTab(tab);
     saveTabIndex();
-    setStatus(`「${f.name}」を開きました`, 'ok');
+    setStatus(`「${f.name}」を開きました(${tab.notebook} › ${tab.section})`, 'ok');
   } catch (e) { alert(`「${f.name}」を読み込めませんでした: ` + (e as Error).message); }
 }
 $<HTMLInputElement>('file-open').addEventListener('change', async ev => {
@@ -973,8 +1391,7 @@ $('btn-psd').addEventListener('click', async () => {
 });
 $('btn-svg').addEventListener('click', () => { tools.commitFloating(); exportSvg(doc, cur.name); });
 
-// ---------------- ローカル自動保存 ----------------
-// IndexedDB に保存する(localStorage は容量が小さく、大きな文字列化で描画が止まるため)
+// ---------------- ローカル保存(IndexedDB) ----------------
 const LEGACY_AUTOSAVE_KEY = 'oekaki.autosave';
 const TAB_INDEX_KEY = 'oekaki.tabs';
 const tabKey = (id: string) => `oekaki.tab.${id}`;
@@ -1003,18 +1420,24 @@ const dbPut = (key: string, value: unknown) => dbRun('readwrite', s => { s.put(v
 const dbGet = <T,>(key: string) => dbRun<T>('readonly', s => s.get(key) as IDBRequest<T>);
 const dbDelete = (key: string) => dbRun('readwrite', s => { s.delete(key); });
 
-interface TabIndexEntry { id: string; name: string; sync?: { lastSha: string | null; synced: boolean; dirty: boolean; lastEdit: number } }
+interface TabIndexEntry {
+  id: string; name: string; notebook?: string; section?: string; open?: boolean; thumb?: string | null; remoteDir?: string;
+  sync?: { lastSha: string | null; synced: boolean; dirty: boolean; lastEdit: number };
+}
 function saveTabIndex() {
   const entries: TabIndexEntry[] = tabs.map(t => ({
-    id: t.id, name: t.name,
+    id: t.id, name: t.name, notebook: t.notebook, section: t.section, open: t.open, thumb: t.thumb, remoteDir: t.remoteDir,
     sync: { lastSha: t.sync.lastSha, synced: t.sync.synced, dirty: t.sync.dirty, lastEdit: t.sync.lastEdit },
   }));
   dbPut(TAB_INDEX_KEY, { activeId: cur?.id, tabs: entries }).catch(() => {});
 }
 async function saveTab(tab: Tab) {
+  if (!tab.doc) return;
   try {
     const { manifest } = await serialize(tab.doc, 'embed');
     await dbPut(tabKey(tab.id), { name: tab.name, manifest });
+    await thumbDataUrl(tab);
+    saveTabIndex();
   } catch { /* プライベートブラウズなどで失敗しても無視 */ }
 }
 let autosaveTimer = 0;
@@ -1025,7 +1448,7 @@ function scheduleAutosave() {
   if (autosavePending && autosavePending !== tab) saveTab(autosavePending);
   autosavePending = tab;
   clearTimeout(autosaveTimer);
-  autosaveTimer = window.setTimeout(() => { autosavePending = null; saveTab(tab); saveTabIndex(); }, 1500);
+  autosaveTimer = window.setTimeout(() => { autosavePending = null; saveTab(tab); }, 1500);
 }
 /** 保存待ちがあれば今すぐ保存する(タブ切り替え・終了前) */
 function flushAutosave() {
@@ -1034,36 +1457,47 @@ function flushAutosave() {
   const tab = autosavePending;
   autosavePending = null;
   saveTab(tab);
-  saveTabIndex();
 }
-/** 前回開いていたタブを復元する。1 枚でも復元できたら true */
+/** 前回の状態(ライブラリ全体と開いていたタブ)を復元する。1 枚でも開けたら true */
 async function restoreTabs(): Promise<boolean> {
   try {
+    structure = (await dbGet<Structure>(STRUCTURE_KEY)) ?? structure;
+    const cachedScan = await dbGet<{ at: number; scan: RemoteScan }>(REMOTE_SCAN_KEY);
+    if (cachedScan) { remoteScan = cachedScan.scan; remoteScanAt = 0; }
     const index = await dbGet<{ activeId?: string; tabs: TabIndexEntry[] }>(TAB_INDEX_KEY);
-    let restoredAny = false;
+    let opened = false;
     if (index?.tabs?.length) {
       for (const entry of index.tabs) {
-        const saved = await dbGet<{ name: string; manifest: Manifest }>(tabKey(entry.id));
-        if (!saved) continue;
-        const tab = addTab(await deserialize(saved.manifest, async () => null), saved.name || entry.name, { activate: false, id: entry.id });
-        // 未送信の変更があったかどうかを引き継ぐ(起動時に GitHub 側で上書きしないため)
+        const tab = createTab(null, entry.name, entry.notebook ?? DEFAULT_NOTEBOOK, entry.section ?? DEFAULT_SECTION, entry.id);
+        tab.thumb = entry.thumb ?? null;
+        tab.remoteDir = entry.remoteDir;
         if (entry.sync) Object.assign(tab.sync, entry.sync);
-        restoredAny = true;
+        tabs.push(tab);
+        ensureStructure(tab.notebook, tab.section);
       }
-      const active = tabs.find(t => t.id === index.activeId) ?? tabs[0];
+      // 前回開いていたタブだけ内容を読み込む
+      for (const entry of index.tabs) {
+        if (!entry.open && entry.id !== index.activeId) continue;
+        const tab = tabs.find(t => t.id === entry.id)!;
+        const saved = await dbGet<{ manifest: Manifest }>(tabKey(tab.id));
+        if (!saved) continue;
+        tab.doc = await deserialize(saved.manifest, async () => null);
+        tab.open = true;
+        opened = true;
+      }
+      const active = tabs.find(t => t.id === index.activeId && t.doc) ?? tabs.find(t => t.doc);
       if (active) activateTab(active);
     }
     // 旧バージョン(タブなし)の保存があれば引き継ぐ
     const legacy = await dbGet<{ name: string; manifest: Manifest }>(LEGACY_AUTOSAVE_KEY);
     if (legacy) {
-      addTab(await deserialize(legacy.manifest, async () => null), legacy.name, { activate: !restoredAny });
+      addTab(await deserialize(legacy.manifest, async () => null), legacy.name, DEFAULT_NOTEBOOK, DEFAULT_SECTION, { activate: !opened });
       await dbDelete(LEGACY_AUTOSAVE_KEY);
-      restoredAny = true;
+      opened = true;
       saveTab(cur);
-      saveTabIndex();
     }
-    return restoredAny;
-  } catch { return false; }
+    return opened;
+  } catch (e) { console.error(e); return false; }
 }
 
 function markDirty() {
@@ -1085,10 +1519,10 @@ const sync = {
   /** 自動同期(既定はオフ = ボタンを押したときだけ同期) */
   auto: false,
 };
-/** タブごとのフォルダを向いたクライアントを作る */
+/** 画像ごとのフォルダを向いたクライアントを作る */
 function ghFor(tab: Tab): GitHubSync | null {
   if (!sync.cfg || !sync.gh) return null;
-  const g = new GitHubSync({ ...sync.cfg, dir: tab.name });
+  const g = new GitHubSync({ ...sync.cfg, dir: tab.remoteDir ?? tabDir(tab) });
   g.knownPaths = tab.sync.knownPaths;
   return g;
 }
@@ -1132,6 +1566,7 @@ function updateSyncStatus() {
     return;
   }
   buttons.hidden = false;
+  if (!cur) return;
   const s = cur.sync;
   const send = $('btn-send'), recv = $('btn-receive');
   const both = s.conflict || (s.dirty && s.remoteChanged);
@@ -1144,10 +1579,10 @@ function updateSyncStatus() {
   // 手動モードでは状態を右上に出すだけ(バナーはボタン操作の結果にだけ使う)
   const out = sync.auto ? setStatus : show;
   if (both) out(`「${cur.name}」は ${DEVICE === 'iPad' ? 'PC' : 'iPad'} でも変更されています。どちらを残すかボタンで選んでください${last}`, 'err');
-  else if (s.remoteChanged) out(`「${cur.name}」: 相手の更新あり(「GitHub の絵を受け取る」で取り込み)${last}`);
-  else if (s.dirty) out(`「${cur.name}」: 未送信の変更あり` + (sync.auto ? '(まもなく自動で送ります)' : '(「この端末の絵を送る」で送信)') + last);
+  else if (s.remoteChanged) out(`「${cur.name}」: 相手の更新あり(「受け取る」で取り込み)${last}`);
+  else if (s.dirty) out(`「${cur.name}」: 未送信の変更あり` + (sync.auto ? '(まもなく自動で送ります)' : '(「送る」で送信)') + last);
   else if (s.synced) out(`「${cur.name}」: 送信済み${last}`, 'ok');
-  else out(`「${cur.name}」: GitHub にまだ送っていません` + (sync.auto ? '(描くと自動で送ります)' : '(「この端末の絵を送る」で送信)'));
+  else out(`「${cur.name}」: GitHub にまだ送っていません` + (sync.auto ? '(描くと自動で送ります)' : '(「送る」で送信)'));
 }
 function loadGhConfig(): (GhConfig & { auto: boolean; auto2?: boolean }) | null {
   try { return JSON.parse(localStorage.getItem(GH_KEY) || 'null'); } catch { return null; }
@@ -1157,7 +1592,7 @@ function applyGhConfig(cfg: (GhConfig & { auto: boolean; auto2?: boolean }) | nu
   sync.cfg = cfg;
   sync.gh = cfg && cfg.token && cfg.owner && cfg.repo ? new GitHubSync(cfg) : null;
   sync.auto = cfg?.auto2 ?? false; // 既定は手動(ボタンを押したときだけ同期)
-  if (resetTabs) for (const t of tabs) t.sync = { ...newSyncState(), dirty: t.sync.dirty, lastEdit: t.sync.lastEdit };
+  if (resetTabs) { for (const t of tabs) t.sync = { ...newSyncState(), dirty: t.sync.dirty, lastEdit: t.sync.lastEdit }; remoteScan = null; }
   updateSyncStatus();
   renderTabs();
 }
@@ -1175,6 +1610,7 @@ async function push(tab: Tab, force = false, manual = false) {
   const gh = ghFor(tab);
   const s = tab.sync;
   if (!gh) { if (manual) setStatus('GitHub の設定がありません。右上の「GitHub」から設定してください', 'err'); return; }
+  if (!tab.doc) return;
   if (s.busy) { if (manual) setStatus('同期の処理中です。少し待ってからもう一度押してください'); return; }
   if (tab === cur && tools.busy) { if (manual) tools.cancel(); else return; }
   s.busy = true;
@@ -1182,17 +1618,24 @@ async function push(tab: Tab, force = false, manual = false) {
   try {
     const editStamp = s.lastEdit; // 送信中に描いた分は「未送信」のまま残す
     const { manifest, files } = await serialize(tab.doc, 'files');
+    const thumb = await makeThumb(compositeToCanvas(tab.doc));
     const repoFiles = [
       { path: PROJECT_FILE, content: JSON.stringify(manifest) },
+      { path: THUMB_FILE, content: new Uint8Array(await thumb.arrayBuffer()) },
       ...(await Promise.all(files.map(async f => ({ path: f.path, content: new Uint8Array(await f.blob.arrayBuffer()) })))),
     ];
-    s.lastSha = await gh.commitFiles(repoFiles, `update ${tab.name} from ${DEVICE} ${new Date().toISOString()}`, { expectedHead: force ? undefined : s.lastSha, force });
-    s.knownPaths = gh.knownPaths;
+    // 旧形式の場所から開いた画像は、新しい場所へ送りつつ古いフォルダを消す
+    const dest = new GitHubSync({ ...sync.cfg!, dir: tabDir(tab) });
+    dest.knownPaths = s.knownPaths;
+    s.lastSha = await dest.commitFiles(repoFiles, `update ${tabDir(tab)} from ${DEVICE} ${new Date().toISOString()}`, { expectedHead: force ? undefined : s.lastSha, force });
+    s.knownPaths = dest.knownPaths;
+    tab.remoteDir = undefined;
     if (s.lastEdit === editStamp) s.dirty = false;
     s.synced = true;
     s.conflict = false;
     s.remoteChanged = false;
     s.lastInfo = { device: DEVICE, date: new Date().toISOString() };
+    if (remoteScan && !remoteScan.canvases.some(c => c.dir === tabDir(tab))) remoteScan.canvases.push({ notebook: tab.notebook, section: tab.section, name: tab.name, dir: tabDir(tab), thumbSha: null, legacy: false });
     saveTabIndex();
   } catch (e) {
     console.error('push failed', e);
@@ -1233,10 +1676,10 @@ async function pull(tab: Tab, manual = false) {
     s.remoteChanged = false;
     await refreshLastInfo(tab);
     saveTabIndex();
-    if (tab === cur) setStatus(pj ? `「${tab.name}」を受け取りました` : `GitHub に「${tab.name}」という名前の絵はまだありません`, pj ? 'ok' : 'err');
+    if (tab === cur || manual) setStatus(pj ? `「${tab.name}」を受け取りました` : `GitHub に「${tab.name}」という名前の絵はまだありません`, pj ? 'ok' : 'err');
   } catch (e) {
     console.error('pull failed', e);
-    if (tab === cur) setStatus(`受信に失敗しました: ` + (e as Error).message, 'err');
+    if (tab === cur || manual) setStatus(`受信に失敗しました: ` + (e as Error).message, 'err');
   } finally {
     s.busy = false;
     if (tab === cur) { setSyncButtons('idle'); if (!$('sync-banner').classList.contains('err') && $('sync-banner').hidden) updateSyncStatus(); }
@@ -1244,7 +1687,7 @@ async function pull(tab: Tab, manual = false) {
   }
 }
 /**
- * 自動同期。タブごとに:
+ * 自動同期(開いているタブが対象)。タブごとに:
  *  - 未送信の変更があり相手が進んでいなければ送る。相手も進んでいれば「両方に変更あり」にして止める
  *  - 変更がなく相手が進んでいれば受け取る
  *  - まだつながっていないタブは、GitHub に同名の絵がなければ送り、あれば「両方に変更あり」にする
@@ -1252,7 +1695,7 @@ async function pull(tab: Tab, manual = false) {
 async function autoSyncTick() {
   if (!sync.gh || !navigator.onLine) return;
   if (!sync.auto) { await checkRemoteTick(); return; }
-  for (const tab of [...tabs]) {
+  for (const tab of openTabs()) {
     const s = tab.sync;
     if (s.busy || s.conflict || (tab === cur && tools.busy)) continue;
     if (s.dirty && Date.now() - s.lastEdit < 4000) continue;
@@ -1284,7 +1727,7 @@ async function autoSyncTick() {
  * 例外として、まだ何も描いていない新しいタブは、GitHub に同名の絵があれば受け取る(何も失われないため)。
  */
 async function checkRemoteTick() {
-  for (const tab of [...tabs]) {
+  for (const tab of openTabs()) {
     const s = tab.sync;
     if (s.busy || Date.now() - s.checkedAt < 30_000) continue;
     s.checkedAt = Date.now();
@@ -1375,8 +1818,9 @@ $('gh-close').addEventListener('click', () => dlgGh.close());
  */
 async function bootSync() {
   if (!sync.gh) return;
+  scanRemote(true);
   if (!sync.auto) { for (const t of tabs) t.sync.checkedAt = 0; await checkRemoteTick(); return; }
-  for (const t of [...tabs]) {
+  for (const t of openTabs()) {
     if (t.sync.dirty) continue; // 未送信の変更は消さない(自動同期が「両方に変更あり」を判定する)
     try {
       if (await ghFor(t)!.remoteHasProject()) await pull(t);
@@ -1394,7 +1838,7 @@ async function boot() {
   setTool('pen');
   renderPalette();
   const restored = await restoreTabs();
-  if (!restored) addTab(createDoc('bitmap', 1024, 768), 'drawing1');
+  if (!restored) addTab(createDoc('bitmap', 1024, 768), 'drawing1', DEFAULT_NOTEBOOK, DEFAULT_SECTION);
   applyGhConfig(loadGhConfig());
   afterEdit();
   await bootSync();

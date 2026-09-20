@@ -116,7 +116,40 @@ dialog p.note { color: var(--muted); font-size: 12px; margin: 6px 0; }
 #sync-status.ok { color: #8fd18f; }
 #doc-info { color: var(--muted); font-size: 12px; }
 kbd { background: #222; border-radius: 3px; padding: 0 4px; font-size: 11px; color: var(--muted); }
+/* ライブラリ(ノートブック › セクション › 画像) */
+#library { position: fixed; inset: 0; z-index: 20; background: var(--bg); display: flex; flex-direction: column; padding-top: env(safe-area-inset-top, 0px); }
+.lib-head { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--panel-border); }
+.lib-head h2 { margin: 0; font-size: 15px; }
+#lib-status { color: var(--muted); font-size: 12px; }
+.lib-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 200px 200px 1fr; }
+.lib-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--panel-border); background: #303030; }
+.lib-grid-col { background: var(--bg); }
+.lib-col-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; color: var(--muted); font-size: 12px; font-weight: 600; border-bottom: 1px solid var(--panel-border); }
+.lib-col-head button { padding: 3px 8px; }
+.lib-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 3px; }
+.lib-item { display: flex; align-items: center; gap: 8px; padding: 8px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+.lib-item:hover { background: #3a3a3a; }
+.lib-item.active { background: #454545; border-color: #666; color: #fff; }
+.lib-item .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.lib-item .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-item .cnt { color: var(--muted); font-size: 11px; }
+.lib-item .more, .lib-card .more { border: none; background: transparent; color: var(--muted); padding: 2px 6px; font-size: 14px; line-height: 1; border-radius: 4px; }
+.lib-item .more:hover, .lib-card .more:hover { background: #555; color: #fff; }
+.lib-grid { flex: 1; overflow-y: auto; padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; align-content: start; }
+.lib-card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; overflow: hidden; cursor: pointer; display: flex; flex-direction: column; }
+.lib-card:hover { border-color: #777; }
+.lib-card.open { outline: 2px solid var(--accent); }
+.lib-card .thumb { aspect-ratio: 4 / 3; background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Crect width='8' height='8' fill='%23ddd'/%3E%3Crect x='8' y='8' width='8' height='8' fill='%23ddd'/%3E%3C/svg%3E"); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.lib-card .thumb img { width: 100%; height: 100%; object-fit: contain; }
+.lib-card .thumb .ph { color: #999; font-size: 12px; }
+.lib-card .meta { display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 8px; }
+.lib-card .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.lib-card .badge { font-size: 10px; color: var(--muted); }
+.lib-card .badge.cloud { color: #7cc4ff; }
+.lib-empty { color: var(--muted); font-size: 13px; padding: 20px; grid-column: 1 / -1; }
+.tab .sdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 @media (max-width: 800px) {
+  .lib-body { grid-template-columns: 150px 150px 1fr; }
   #app { grid-template-columns: 46px 1fr 200px; }
   #tools button { width: 38px; height: 34px; font-size: 15px; }
   #sync-buttons button { width: 38px; }

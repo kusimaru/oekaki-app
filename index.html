@@ -17,6 +17,7 @@
 <div id="app">
   <header id="topbar">
     <div class="group">
+      <button id="btn-library" title="ノートブック / セクション / 画像の一覧">ライブラリ</button>
       <button id="btn-new">新規</button>
       <button id="btn-open" title="プロジェクト(.json)、画像(PNG / JPEG / WebP など)、PSD を開く">開く</button>
       <button id="btn-save" title="プロジェクト(.json)を保存">保存</button>
@@ -124,7 +125,11 @@
 
   <dialog id="dlg-new">
     <h2>新規キャンバス</h2>
-    <div class="row"><label>名前</label><input type="text" id="new-name" value="drawing1" style="flex:1" placeholder="タブ名 / GitHub のフォルダ名"></div>
+    <div class="row"><label>ノートブック</label><input type="text" id="new-notebook" list="nb-list" style="flex:1" placeholder="既存を選ぶか新しい名前"></div>
+    <div class="row"><label>セクション</label><input type="text" id="new-section" list="sec-list" style="flex:1" placeholder="既存を選ぶか新しい名前"></div>
+    <div class="row"><label>名前</label><input type="text" id="new-name" value="drawing1" style="flex:1" placeholder="画像の名前(GitHub のフォルダ名)"></div>
+    <datalist id="nb-list"></datalist>
+    <datalist id="sec-list"></datalist>
     <div class="row"><label>幅 (px)</label><input type="number" id="new-width" value="1024" min="1" max="8192"></div>
     <div class="row"><label>高さ (px)</label><input type="number" id="new-height" value="768" min="1" max="8192"></div>
     <div class="row"><label>形式</label>
@@ -156,6 +161,40 @@
       <button id="gh-save" class="active">設定を保存</button>
     </div>
   </dialog>
+
+  <dialog id="dlg-move">
+    <h2>画像を移動</h2>
+    <div class="row"><label>ノートブック</label><input type="text" id="move-notebook" list="nb-list" style="flex:1"></div>
+    <div class="row"><label>セクション</label><input type="text" id="move-section" list="sec-list" style="flex:1"></div>
+    <div class="actions">
+      <button id="move-cancel">キャンセル</button>
+      <button id="move-ok" class="active">移動</button>
+    </div>
+  </dialog>
+
+  <div id="library" hidden>
+    <div class="lib-head">
+      <h2>ライブラリ</h2>
+      <span id="lib-status"></span>
+      <span style="flex:1"></span>
+      <button id="lib-refresh" title="GitHub から一覧を取り直す">GitHub から更新</button>
+      <button id="lib-close" class="active">閉じる</button>
+    </div>
+    <div class="lib-body">
+      <div class="lib-col">
+        <div class="lib-col-head"><span>ノートブック</span><button id="lib-nb-add" title="ノートブックを追加">＋</button></div>
+        <div class="lib-list" id="lib-nb-list"></div>
+      </div>
+      <div class="lib-col">
+        <div class="lib-col-head"><span>セクション</span><button id="lib-sec-add" title="セクションを追加">＋</button></div>
+        <div class="lib-list" id="lib-sec-list"></div>
+      </div>
+      <div class="lib-col lib-grid-col">
+        <div class="lib-col-head"><span id="lib-crumb">画像</span><button id="lib-img-add">＋ 新規画像</button></div>
+        <div class="lib-grid" id="lib-grid"></div>
+      </div>
+    </div>
+  </div>
 
   <input type="file" id="file-open" accept=".json,.psd,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.avif,image/*,application/json" multiple hidden>
 </div>

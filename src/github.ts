@@ -159,6 +159,61 @@ export class GitHubSync {
     return c ? { message: c.message as string, date: c.committer?.date ?? c.author?.date } : null;
   }
 
+  /** リポジトリ全体のファイル一覧(パスと blob の sha) */
+  async listTree(): Promise<{ sha: string | null; files: { path: string; sha: string }[] }> {
+    const head = await this.getHead();
+    if (!head) return { sha: null, files: [] };
+    const commit = await this.api(`${this.base}/git/commits/${head}`);
+    const tree = await this.api(`${this.base}/git/trees/${commit.tree.sha}?recursive=1`);
+    return { sha: head, files: (tree.tree as any[]).filter(i => i.type === 'blob').map(i => ({ path: i.path, sha: i.sha })) };
+  }
+
+  /** blob を取得(画像などは data URL に) */
+  async getBlobBytes(sha: string): Promise<Uint8Array> {
+    const blob = await this.api(`${this.base}/git/blobs/${sha}`);
+    return fromBase64(blob.content);
+  }
+
+  /**
+   * ファイルの追加・置換・削除・移動を 1 コミットで行う(prefix は付けない。パスはリポジトリのルートから)。
+   * content あり = 追加/置換、sha あり = 既存 blob を別パスへ、sha null = 削除
+   */
+  async commitChanges(changes: ({ path: string; content: Uint8Array | string } | { path: string; sha: string | null })[], message: string): Promise<string> {
+    const head = await this.ensureBranch();
+    const headCommit = await this.api(`${this.base}/git/commits/${head}`);
+    const enc = new TextEncoder();
+    const tree: any[] = [];
+    for (const c of changes) {
+      if ('content' in c) {
+        const u8 = typeof c.content === 'string' ? enc.encode(c.content) : c.content;
+        const blob = await this.api(`${this.base}/git/blobs`, { method: 'POST', body: JSON.stringify({ content: toBase64(u8), encoding: 'base64' }) });
+        tree.push({ path: c.path, mode: '100644', type: 'blob', sha: blob.sha });
+      } else {
+        tree.push({ path: c.path, mode: '100644', type: 'blob', sha: c.sha });
+      }
+    }
+    if (!tree.length) return head;
+    const newTree = await this.api(`${this.base}/git/trees`, { method: 'POST', body: JSON.stringify({ base_tree: headCommit.tree.sha, tree }) });
+    const commit = await this.api(`${this.base}/git/commits`, { method: 'POST', body: JSON.stringify({ message, tree: newTree.sha, parents: [head] }) });
+    await this.api(`${this.base}/git/refs/heads/${encodeURIComponent(this.cfg.branch)}`, { method: 'PATCH', body: JSON.stringify({ sha: commit.sha, force: true }) });
+    return commit.sha as string;
+  }
+
+  /** フォルダ(またはフォルダ群)を別の場所へ移す / 削除する。fn が null を返したパスは削除 */
+  async movePaths(fn: (path: string) => string | null | undefined, message: string): Promise<string | null> {
+    const { sha, files } = await this.listTree();
+    if (!sha) return null;
+    const changes: { path: string; sha: string | null }[] = [];
+    for (const f of files) {
+      const to = fn(f.path);
+      if (to === undefined || to === f.path) continue;
+      changes.push({ path: f.path, sha: null });
+      if (to !== null) changes.push({ path: to, sha: f.sha });
+    }
+    if (!changes.length) return sha;
+    return this.commitChanges(changes, message);
+  }
+
   /** プロジェクトフォルダ配下の全ファイルを取得 */
   async pull(): Promise<{ sha: string | null; files: Map<string, Uint8Array> }> {
     const files = new Map<string, Uint8Array>();
