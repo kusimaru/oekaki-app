@@ -38,8 +38,13 @@ export class GitHubSync {
   constructor(public cfg: GhConfig) {}
 
   private async api<T = any>(path: string, init: RequestInit = {}): Promise<T> {
-    const res = await fetch(API + path, {
+    // GitHub API は Cache-Control: max-age=60 を返すので、ブラウザが 60 秒間古い応答を使ってしまう。
+    // 常に最新を見るため、キャッシュ無効化と GET へのダミー引数の両方で防ぐ
+    const method = (init.method ?? 'GET').toUpperCase();
+    const url = API + path + (method === 'GET' ? (path.includes('?') ? '&' : '?') + '_=' + Date.now() : '');
+    const res = await fetch(url, {
       ...init,
+      cache: 'no-store',
       headers: {
         Authorization: `Bearer ${this.cfg.token}`,
         Accept: 'application/vnd.github+json',
