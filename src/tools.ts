@@ -38,8 +38,8 @@ const isXform = (t: ToolId): t is XformMode => t === 'move' || t === 'rotate' ||
 type Op =
   | { t: 'marquee'; start: Pt; cur: Pt; shift: boolean }
   | { t: 'lasso'; pts: Pt[]; shift: boolean }
-  | { t: 'stroke'; canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; last: Pt; before: Snap }
-  | { t: 'erase'; last: Pt; before: Snap }
+  | { t: 'stroke'; canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; last: Pt; lastW: number; carry: number; before: Snap }
+  | { t: 'erase'; last: Pt; lastW: number; carry: number; before: Snap }
   | { t: 'vpen'; pts: Pt[] }
   | { t: 'verase'; before: Snap; changed: boolean }
   | { t: 'shape'; kind: ShapeKind; start: Pt; cur: Pt; shift: boolean }
@@ -211,13 +211,18 @@ export class Tools {
       case 'pen': {
         const canvas = makeCanvas(w, h);
         const ctx = ctx2d(canvas);
-        this.op = { t: 'stroke', canvas, ctx, last: p, before: snap(layer) };
-        this.segment(ctx, p, p, this.strokeWidth(info), this.opaqueColor());
+        this.smoothP = -1;
+        const wd = this.strokeWidth(info);
+        ctx.fillStyle = this.opaqueColor();
+        const carry = this.stamp(ctx, p, p, wd, wd, 0);
+        this.op = { t: 'stroke', canvas, ctx, last: p, lastW: wd, carry, before: snap(layer) };
         break;
       }
       case 'eraser': {
-        this.op = { t: 'erase', last: p, before: snap(layer) };
-        this.eraseSegment(layer, p, p, this.strokeWidth(info));
+        this.smoothP = -1;
+        const wd = this.strokeWidth(info);
+        const carry = this.eraseStamp(layer, p, p, wd, wd, 0);
+        this.op = { t: 'erase', last: p, lastW: wd, carry, before: snap(layer) };
         break;
       }
       case 'bucket': this.bucketBitmap(layer, p); break;
@@ -295,14 +300,21 @@ export class Tools {
     switch (op.t) {
       case 'marquee': op.cur = p; break;
       case 'lasso': op.pts.push(p); break;
-      case 'stroke':
-        this.segment(op.ctx, op.last, p, this.strokeWidth(info), this.opaqueColor());
+      case 'stroke': {
+        const wd = this.strokeWidth(info);
+        op.ctx.fillStyle = this.opaqueColor();
+        op.carry = this.stamp(op.ctx, op.last, p, op.lastW, wd, op.carry);
         op.last = p;
+        op.lastW = wd;
         break;
-      case 'erase':
-        if (layer.kind === 'bitmap') this.eraseSegment(layer, op.last, p, this.strokeWidth(info));
+      }
+      case 'erase': {
+        const wd = this.strokeWidth(info);
+        if (layer.kind === 'bitmap') op.carry = this.eraseStamp(layer, op.last, p, op.lastW, wd, op.carry);
         op.last = p;
+        op.lastW = wd;
         break;
+      }
       case 'vpen': op.pts.push(p); break;
       case 'verase': if (layer.kind === 'vector') this.eraseShapesAt(layer, p); break;
       case 'shape': op.cur = p; op.shift = info.shift; break;
@@ -425,41 +437,60 @@ export class Tools {
 
   // ---------- 内部処理 ----------
 
+  /** ストローク中の平滑化済み筆圧(-1 = 未開始) */
+  private smoothP = -1;
+
   private strokeWidth(info: InputInfo): number {
     const s = this.app.options.size;
-    if (this.app.options.pressure && info.pen && info.pressure > 0) return Math.max(0.5, s * (0.2 + info.pressure * 1.6));
-    return s;
+    if (!(this.app.options.pressure && info.pen)) return s;
+    // 筆圧 0 はセンサー未取得とみなして中間値に。急な変化は EMA で抑えて抜きを滑らかにする
+    const raw = info.pressure > 0 ? info.pressure : 0.5;
+    this.smoothP = this.smoothP < 0 ? raw : this.smoothP + (raw - this.smoothP) * 0.45;
+    return Math.max(0.5, s * Math.min(1.4, 0.12 + this.smoothP * 1.5));
   }
 
   private opaqueColor(): string {
     return css({ ...this.app.color, a: 1 });
   }
 
-  private segment(ctx: CanvasRenderingContext2D, a: Pt, b: Pt, width: number, style: string) {
-    ctx.strokeStyle = style;
-    ctx.fillStyle = style;
-    ctx.lineWidth = width;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    if (a.x === b.x && a.y === b.y) {
-      ctx.beginPath();
-      ctx.arc(a.x, a.y, width / 2, 0, Math.PI * 2);
-      ctx.fill();
-      return;
+  /**
+   * a→b に沿って円を等間隔にスタンプする(太さは wa→wb に補間)。
+   * 線分をつなぐ方式と違い、太さが変わっても端が飛び出さず、抜きが滑らかになる。
+   * 戻り値は次の区間に持ち越す距離。
+   */
+  private stamp(ctx: CanvasRenderingContext2D, a: Pt, b: Pt, wa: number, wb: number, carry: number): number {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len === 0) {
+      if (carry === 0) {
+        ctx.beginPath();
+        ctx.arc(a.x, a.y, wa / 2, 0, Math.PI * 2);
+        ctx.fill();
+        return Math.max(0.75, wa * 0.18);
+      }
+      return carry;
     }
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
+    let d = carry;
+    while (d <= len) {
+      const t = d / len;
+      const w = wa + (wb - wa) * t;
+      ctx.beginPath();
+      ctx.arc(a.x + dx * t, a.y + dy * t, w / 2, 0, Math.PI * 2);
+      ctx.fill();
+      d += Math.max(0.75, w * 0.18);
+    }
+    return d - len;
   }
 
-  private eraseSegment(layer: BitmapLayer, a: Pt, b: Pt, width: number) {
+  private eraseStamp(layer: BitmapLayer, a: Pt, b: Pt, wa: number, wb: number, carry: number): number {
     const c = ctx2d(layer.canvas);
     c.save();
     if (this.selection) c.clip(selectionPath(this.selection));
     c.globalCompositeOperation = 'destination-out';
-    this.segment(c, a, b, width, '#000');
+    c.fillStyle = '#000';
+    const r = this.stamp(c, a, b, wa, wb, carry);
     c.restore();
+    return r;
   }
 
   private bucketBitmap(layer: BitmapLayer, p: Pt) {

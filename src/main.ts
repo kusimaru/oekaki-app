@@ -121,64 +121,107 @@ function toDoc(ev: { clientX: number; clientY: number }): Pt {
 }
 const info = (ev: PointerEvent): InputInfo => ({ pressure: ev.pressure, pen: ev.pointerType === 'pen', shift: ev.shiftKey });
 
-const pointers = new Map<number, Pt>();
+/** 指(タッチ)のポインタだけを追跡。ペンとマウスは drawId / panId で管理する */
+const touchPts = new Map<number, Pt>();
 let mode: 'none' | 'draw' | 'pan' | 'pinch' = 'none';
+let drawId: number | null = null;
+let drawIsPen = false;
+let panId: number | null = null;
 let panStart = { x: 0, y: 0, px: 0, py: 0 };
 let pinchStart = { dist: 1, zoom: 1, docX: 0, docY: 0 };
 let spaceDown = false;
 let penSeen = false;
 
 function pinchInfo() {
-  const [a, b] = [...pointers.values()];
+  const [a, b] = [...touchPts.values()];
   return { dist: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
 }
-
-view.addEventListener('pointerdown', ev => {
-  view.setPointerCapture(ev.pointerId);
-  pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
-  if (ev.pointerType === 'pen' && !penSeen) {
-    penSeen = true;
-    fingerDraws = false;
-    $<HTMLInputElement>('opt-finger').checked = false;
-  }
-  if (ev.pointerType === 'touch' && pointers.size === 2) {
-    if (mode === 'draw') tools.cancel();
-    const p = pinchInfo();
-    const d = toDoc({ clientX: p.cx, clientY: p.cy });
-    pinchStart = { dist: p.dist, zoom, docX: d.x, docY: d.y };
-    mode = 'pinch';
-    return;
-  }
-  if (pointers.size > 1) return;
+function startPan(ev: PointerEvent) {
+  mode = 'pan';
+  panId = ev.pointerId;
+  panStart = { x: ev.clientX, y: ev.clientY, px: panX, py: panY };
+}
+function startPinch() {
+  const p = pinchInfo();
+  const d = toDoc({ clientX: p.cx, clientY: p.cy });
+  pinchStart = { dist: p.dist, zoom, docX: d.x, docY: d.y };
+  mode = 'pinch';
+}
+function endDraw(ev: PointerEvent | null) {
+  if (mode !== 'draw') return;
+  if (ev) tools.up(toDoc(ev), info(ev));
+  else tools.cancel();
+  mode = 'none';
+  drawId = null;
+}
+/** ツールに応じて描画またはパンを開始する(ペン / マウス / 指すべて共通) */
+function startPointer(ev: PointerEvent) {
   if (tools.tool === 'zoom' && ev.button === 0 && !spaceDown) {
     zoomAt(ev.clientX, ev.clientY, ev.altKey ? 0.8 : 1.25);
     return;
   }
-  const wantPan = tools.tool === 'hand' || spaceDown || ev.button === 1 || (ev.pointerType === 'touch' && !fingerDraws);
-  if (wantPan) {
-    mode = 'pan';
-    panStart = { x: ev.clientX, y: ev.clientY, px: panX, py: panY };
-    return;
-  }
+  if (tools.tool === 'hand' || spaceDown || ev.button === 1) { startPan(ev); return; }
   if (ev.button !== 0) return;
   mode = 'draw';
+  drawId = ev.pointerId;
+  drawIsPen = ev.pointerType === 'pen';
   tools.down(toDoc(ev), info(ev));
+}
+
+view.addEventListener('pointerdown', ev => {
+  try { view.setPointerCapture(ev.pointerId); } catch { /* 合成イベントなどでは失敗することがある */ }
+  // スライダー等にフォーカスが残っていると iPad の Scribble が反応することがあるので外す
+  if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) document.activeElement.blur();
+  cursorPos = toDoc(ev);
+
+  if (ev.pointerType === 'pen') {
+    if (!penSeen) {
+      penSeen = true;
+      fingerDraws = false;
+      $<HTMLInputElement>('opt-finger').checked = false;
+    }
+    // 手のひらが先に触れていても Pencil を優先する
+    if (mode === 'pan' || mode === 'pinch') { mode = 'none'; panId = null; }
+    if (mode === 'draw') return;
+    startPointer(ev);
+    return;
+  }
+
+  if (ev.pointerType === 'touch') {
+    touchPts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    // Pencil で描いている最中の指(手のひら)は無視する
+    if (mode === 'draw' && drawIsPen) return;
+    if (touchPts.size === 2) {
+      if (mode === 'draw') endDraw(null);
+      if (mode === 'pan') { mode = 'none'; panId = null; }
+      startPinch();
+      return;
+    }
+    if (touchPts.size > 2 || mode !== 'none') return;
+    if (!fingerDraws) { startPan(ev); return; }
+    startPointer(ev);
+    return;
+  }
+
+  // マウス
+  if (mode !== 'none') return;
+  startPointer(ev);
 });
 
 view.addEventListener('pointermove', ev => {
-  if (pointers.has(ev.pointerId)) pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
-  cursorPos = toDoc(ev);
-  if (mode === 'pinch' && pointers.size >= 2) {
+  if (touchPts.has(ev.pointerId)) touchPts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+  if (ev.pointerType !== 'touch' || mode !== 'draw' || !drawIsPen) cursorPos = toDoc(ev);
+  if (mode === 'pinch' && touchPts.size >= 2) {
     const p = pinchInfo();
     const r = view.getBoundingClientRect();
     zoom = clampZoom(pinchStart.zoom * p.dist / pinchStart.dist);
     panX = p.cx - r.left - pinchStart.docX * zoom;
     panY = p.cy - r.top - pinchStart.docY * zoom;
     updateZoomLabel();
-  } else if (mode === 'pan') {
+  } else if (mode === 'pan' && ev.pointerId === panId) {
     panX = panStart.px + (ev.clientX - panStart.x);
     panY = panStart.py + (ev.clientY - panStart.y);
-  } else if (mode === 'draw' && pointers.has(ev.pointerId)) {
+  } else if (mode === 'draw' && ev.pointerId === drawId) {
     const events = typeof ev.getCoalescedEvents === 'function' && ev.getCoalescedEvents().length ? ev.getCoalescedEvents() : [ev];
     for (const e of events) tools.move(toDoc(e), info(e));
   }
@@ -186,15 +229,24 @@ view.addEventListener('pointermove', ev => {
 });
 
 function pointerEnd(ev: PointerEvent) {
-  const had = pointers.delete(ev.pointerId);
-  if (mode === 'pinch') { if (pointers.size < 2) mode = 'none'; return; }
-  if (!had) return;
-  if (mode === 'draw') tools.up(toDoc(ev), info(ev));
-  mode = 'none';
+  touchPts.delete(ev.pointerId);
+  if (mode === 'pinch') {
+    if (touchPts.size < 2) mode = 'none';
+  } else if (mode === 'pan' && ev.pointerId === panId) {
+    mode = 'none';
+    panId = null;
+  } else if (mode === 'draw' && ev.pointerId === drawId) {
+    endDraw(ev);
+  }
   requestRender();
 }
 view.addEventListener('pointerup', pointerEnd);
 view.addEventListener('pointercancel', pointerEnd);
+// iPad Safari のスクロール / ピンチ / Scribble などのジェスチャ認識を止める
+view.addEventListener('touchstart', ev => ev.preventDefault(), { passive: false });
+view.addEventListener('touchmove', ev => ev.preventDefault(), { passive: false });
+document.addEventListener('gesturestart', ev => ev.preventDefault());
+document.addEventListener('gesturechange', ev => ev.preventDefault());
 view.addEventListener('pointerleave', () => { cursorPos = null; requestRender(); });
 view.addEventListener('contextmenu', ev => ev.preventDefault());
 view.addEventListener('wheel', ev => {
@@ -562,23 +614,56 @@ $('btn-psd').addEventListener('click', async () => {
 $('btn-svg').addEventListener('click', () => { tools.commitFloating(); exportSvg(doc, docName); });
 
 // ---------------- ローカル自動保存 ----------------
+// IndexedDB に保存する(localStorage は容量が小さく、大きな文字列化で描画が止まるため)
 const AUTOSAVE_KEY = 'oekaki.autosave';
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open('oekaki', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    req.onsuccess = () => res(req.result);
+    req.onerror = () => rej(req.error);
+  });
+}
+async function dbPut(key: string, value: unknown) {
+  const db = await openDb();
+  await new Promise<void>((res, rej) => {
+    const tx = db.transaction('kv', 'readwrite');
+    tx.objectStore('kv').put(value, key);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+  db.close();
+}
+async function dbGet<T>(key: string): Promise<T | undefined> {
+  const db = await openDb();
+  const v = await new Promise<T | undefined>((res, rej) => {
+    const req = db.transaction('kv').objectStore('kv').get(key);
+    req.onsuccess = () => res(req.result as T | undefined);
+    req.onerror = () => rej(req.error);
+  });
+  db.close();
+  return v;
+}
 let autosaveTimer = 0;
 function scheduleAutosave() {
   clearTimeout(autosaveTimer);
   autosaveTimer = window.setTimeout(async () => {
     try {
       const { manifest } = await serialize(doc, 'embed');
-      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ name: docName, manifest }));
-    } catch { /* 容量超過などは無視 */ }
+      await dbPut(AUTOSAVE_KEY, { name: docName, manifest });
+    } catch { /* プライベートブラウズなどで失敗しても無視 */ }
   }, 1500);
 }
 async function restoreAutosave(): Promise<boolean> {
   try {
-    const raw = localStorage.getItem(AUTOSAVE_KEY);
-    if (!raw) return false;
-    const { name, manifest } = JSON.parse(raw);
-    loadDoc(await deserialize(manifest, async () => null), name);
+    let saved = await dbGet<{ name: string; manifest: Manifest }>(AUTOSAVE_KEY);
+    if (!saved) {
+      // 旧バージョンの localStorage 保存があれば引き継ぐ
+      const raw = localStorage.getItem(AUTOSAVE_KEY);
+      if (raw) { saved = JSON.parse(raw); localStorage.removeItem(AUTOSAVE_KEY); }
+    }
+    if (!saved) return false;
+    loadDoc(await deserialize(saved.manifest, async () => null), saved.name);
     return true;
   } catch { return false; }
 }
