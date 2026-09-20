@@ -41,6 +41,11 @@
     </div>
   </header>
 
+  <div id="tabbar">
+    <div id="tabs"></div>
+    <button id="btn-tab-new" title="新規キャンバス">＋</button>
+  </div>
+
   <aside id="toolbar" title="ドラッグで並べ替え"></aside>
 
   <main id="viewport"><canvas id="view"></canvas></main>
@@ -108,6 +113,7 @@
 
   <dialog id="dlg-new">
     <h2>新規キャンバス</h2>
+    <div class="row"><label>名前</label><input type="text" id="new-name" value="drawing1" style="flex:1" placeholder="タブ名 / GitHub のフォルダ名"></div>
     <div class="row"><label>幅 (px)</label><input type="number" id="new-width" value="1024" min="1" max="8192"></div>
     <div class="row"><label>高さ (px)</label><input type="number" id="new-height" value="768" min="1" max="8192"></div>
     <div class="row"><label>形式</label>
@@ -130,7 +136,8 @@
     <div class="row"><label>オーナー</label><input type="text" id="gh-owner" style="flex:1" placeholder="user または org"></div>
     <div class="row"><label>リポジトリ</label><input type="text" id="gh-repo" style="flex:1"></div>
     <div class="row"><label>ブランチ</label><input type="text" id="gh-branch" value="main" style="flex:1"></div>
-    <div class="row"><label>フォルダ</label><input type="text" id="gh-dir" value="drawing1" style="flex:1" placeholder="リポジトリ内のプロジェクトフォルダ"></div>
+    <div class="row"><label>フォルダ</label><input type="text" id="gh-dir" value="drawing1" style="flex:1" placeholder="現在のタブの保存フォルダ名"></div>
+    <p class="note">フォルダ名はタブごとに異なります(タブ名 = リポジトリ内のフォルダ名)。ここを変えると現在のタブの名前が変わります。</p>
     <div class="row"><label>自動同期</label><input type="checkbox" id="gh-auto" checked><span style="color:var(--muted)">編集後に自動プッシュ / 定期的にプル</span></div>
     <p class="note" id="gh-msg"></p>
     <div class="actions">

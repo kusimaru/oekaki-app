@@ -31,6 +31,8 @@ export interface Floating {
   implicit: boolean;
 }
 
+export interface ToolState { selection: Selection | null; selectedShapes: Set<string>; }
+
 export type Clip =
   | { kind: 'bitmap'; canvas: HTMLCanvasElement; x: number; y: number }
   | { kind: 'vector'; shapes: Shape[]; layerId: string };
@@ -78,6 +80,17 @@ export class Tools {
     this.selection = null;
     this.selectedShapes.clear();
     this.floating = null;
+  }
+
+  /** タブ切り替え用: 選択状態を取り出す(浮動選択は先に確定しておくこと) */
+  getState(): ToolState {
+    return { selection: this.selection, selectedShapes: new Set(this.selectedShapes) };
+  }
+  setState(s: ToolState | null) {
+    this.op = null;
+    this.floating = null;
+    this.selection = s?.selection ?? null;
+    this.selectedShapes = s ? new Set(s.selectedShapes) : new Set();
   }
 
   deselect() {

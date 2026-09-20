@@ -2,7 +2,7 @@ import type { Doc, DocKind, InputInfo, Layer, Pt, Rgba, ToolId, ToolOptions } fr
 import { BASIC_COLORS, css, fromHex, hex, same } from './color';
 import { activeLayer, composite, compositeToCanvas, createDoc, createLayer, ctx2d, makeCanvas, rasterizeLayer, uid } from './document';
 import { History, layersState, snap } from './history';
-import { Tools, type AppCtx } from './tools';
+import { Tools, type AppCtx, type ToolState } from './tools';
 import { download, exportPng, exportPsd, exportSvg } from './exporters';
 import { PROJECT_FILE, deserialize, serialize, type Manifest } from './project';
 import { ConflictError, GitHubSync, type GhConfig } from './github';
@@ -11,13 +11,44 @@ import { ICONS } from './icons';
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ---------------- 状態 ----------------
+/** GitHub 同期の進行状態(タブごと) */
+interface SyncState {
+  lastSha: string | null;
+  /** 一度でも pull/push に成功していれば true(自動プッシュの条件) */
+  synced: boolean;
+  dirty: boolean;
+  lastEdit: number;
+  busy: boolean;
+  conflict: boolean;
+  knownPaths: Set<string>;
+}
+const newSyncState = (): SyncState => ({ lastSha: null, synced: false, dirty: false, lastEdit: 0, busy: false, conflict: false, knownPaths: new Set() });
+
+/** 開いているキャンバス 1 枚分の状態。名前は GitHub のフォルダ名を兼ねる */
+interface Tab {
+  id: string;
+  name: string;
+  doc: Doc;
+  history: History;
+  zoom: number;
+  panX: number;
+  panY: number;
+  toolState: ToolState | null;
+  selectedLayerIds: Set<string>;
+  sync: SyncState;
+}
+let tabs: Tab[] = [];
+let cur!: Tab;
+
+// 以下はアクティブなタブの内容を映した変数(タブ切り替え時に入れ替える)
 let doc: Doc = createDoc('bitmap', 1024, 768);
+let history = new History();
+let zoom = 1, panX = 0, panY = 0;
+let selectedLayerIds = new Set<string>();
+
 let color: Rgba = { r: 0, g: 0, b: 0, a: 1 };
 const options: ToolOptions = { size: 6, fill: false, tolerance: 24, pressure: true, sampleAll: false };
 let fingerDraws = true;
-const history = new History();
-let zoom = 1, panX = 0, panY = 0;
-let docName = 'drawing';
 
 const view = $<HTMLCanvasElement>('view');
 const vctx = view.getContext('2d')!;
@@ -34,7 +65,7 @@ const app: AppCtx = {
   get doc() { return doc; },
   get color() { return color; },
   options,
-  history,
+  get history() { return history; },
   get zoom() { return zoom; },
   render: requestRender,
   dirty: markDirty,
@@ -432,7 +463,8 @@ window.addEventListener('keydown', ev => {
       case '1': zoomCenter(1 / zoom); break;                     // 100%
       case '=': case '+': case ';': zoomCenter(1.25); break;     // ズームイン
       case '-': zoomCenter(0.8); break;                          // ズームアウト
-      case 'n': if (ev.shiftKey) $('btn-layer-add').click(); else handled = false; break; // 新規レイヤー
+      case 'n': if (ev.shiftKey) $('btn-layer-add').click(); else openNewDialog(); break; // 新規レイヤー / 新規キャンバス
+      case 'pageup': case 'pagedown': cycleTab(k === 'pageup' ? -1 : 1); break;          // タブ切り替え
       default: handled = false;
     }
     if (handled) ev.preventDefault();
@@ -457,8 +489,8 @@ function undo() { tools.cancel(); tools.commitFloating(); if (history.undo(doc))
 function redo() { tools.cancel(); tools.commitFloating(); if (history.redo(doc)) { markDirty(); afterEdit(); } }
 $('btn-undo').addEventListener('click', undo);
 $('btn-redo').addEventListener('click', redo);
-$('btn-zoom-in').addEventListener('click', () => { const r = view.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1.25); });
-$('btn-zoom-out').addEventListener('click', () => { const r = view.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, 0.8); });
+$('btn-zoom-in').addEventListener('click', () => zoomCenter(1.25));
+$('btn-zoom-out').addEventListener('click', () => zoomCenter(0.8));
 $('btn-zoom-fit').addEventListener('click', zoomFit);
 
 function afterEdit() {
@@ -529,11 +561,9 @@ function scheduleLayerPanel() {
   clearTimeout(layerPanelTimer);
   layerPanelTimer = window.setTimeout(renderLayers, 250);
 }
-/** 選択中のレイヤー id(アクティブレイヤーを必ず含む) */
-let selectedLayerIds = new Set<string>();
 /** iPad 向け: ON のあいだはタップで選択の追加 / 解除になる */
 let multiSelectMode = false;
-/** レイヤー構成が変わった後に選択を整える */
+/** レイヤー構成が変わった後に選択を整える(選択はアクティブレイヤーを必ず含む) */
 function syncLayerSelection() {
   const ids = new Set(doc.layers.map(l => l.id));
   for (const id of [...selectedLayerIds]) if (!ids.has(id)) selectedLayerIds.delete(id);
@@ -742,41 +772,155 @@ $('btn-layer-rename').addEventListener('click', () => {
   if (n && n.trim()) { l.name = n.trim(); markDirty(); renderLayers(); }
 });
 
-// ---------------- ドキュメント ----------------
-function loadDoc(d: Doc, name?: string) {
-  tools.reset();
-  history.clear();
-  doc = d;
-  selectedLayerIds = new Set();
-  if (name) docName = name;
+// ---------------- タブ(複数キャンバス) ----------------
+/** 同名のタブがあれば末尾に番号を付ける(名前は GitHub のフォルダ名になるため一意にする) */
+function uniqueTabName(base: string, except?: Tab): string {
+  const clean = (base.trim() || 'drawing').replace(/[\\/:*?"<>|]/g, '_');
+  const used = new Set(tabs.filter(t => t !== except).map(t => t.name));
+  if (!used.has(clean)) return clean;
+  const m = clean.match(/^(.*?)(\d+)$/);
+  const stem = m ? m[1] : clean;
+  let n = m ? Number(m[2]) + 1 : 2;
+  while (used.has(stem + n)) n++;
+  return stem + n;
+}
+function createTab(d: Doc, name: string, id = uid()): Tab {
+  return { id, name: uniqueTabName(name), doc: d, history: new History(), zoom: 0, panX: 0, panY: 0, toolState: null, selectedLayerIds: new Set(), sync: newSyncState() };
+}
+/** 現在のタブに、表示状態を書き戻す */
+function stashCurrentTab() {
+  if (!cur) return;
+  tools.commitFloating();
+  flushAutosave();
+  cur.zoom = zoom; cur.panX = panX; cur.panY = panY;
+  cur.selectedLayerIds = selectedLayerIds;
+  cur.toolState = tools.getState();
+}
+function activateTab(tab: Tab) {
+  cur = tab;
+  doc = tab.doc;
+  history = tab.history;
+  selectedLayerIds = tab.selectedLayerIds;
+  tools.setState(tab.toolState);
   renderPalette();
   renderLayers();
-  zoomFit();
+  if (tab.zoom > 0) { zoom = tab.zoom; panX = tab.panX; panY = tab.panY; updateZoomLabel(); }
+  else zoomFit();
+  renderTabs();
+  updateSyncStatus();
   afterEdit();
 }
-function newDoc(kind: DocKind, w: number, h: number) {
-  loadDoc(createDoc(kind, w, h));
-  sync.lastSha = null;
-  sync.synced = false;
-  sync.dirty = false;
-  updateSyncStatus();
+function addTab(d: Doc, name: string, opts: { activate?: boolean; id?: string } = {}): Tab {
+  const tab = createTab(d, name, opts.id);
+  tabs.push(tab);
+  if (opts.activate ?? true) { stashCurrentTab(); activateTab(tab); }
+  else renderTabs();
+  return tab;
 }
+function switchTab(id: string) {
+  const tab = tabs.find(t => t.id === id);
+  if (!tab || tab === cur) return;
+  stashCurrentTab();
+  activateTab(tab);
+  saveTabIndex();
+}
+function cycleTab(dir: 1 | -1) {
+  if (tabs.length < 2) return;
+  const i = tabs.indexOf(cur);
+  switchTab(tabs[(i + dir + tabs.length) % tabs.length].id);
+}
+async function closeTab(id: string) {
+  const tab = tabs.find(t => t.id === id);
+  if (!tab) return;
+  if (tab.sync.dirty && sync.gh && !confirm(`「${tab.name}」には GitHub に送っていない変更があります。閉じますか?`)) return;
+  if (!sync.gh && !confirm(`「${tab.name}」を閉じますか?(この端末の自動保存からも消えます。残したい場合は先に「保存」してください)`)) return;
+  const idx = tabs.indexOf(tab);
+  tabs = tabs.filter(t => t !== tab);
+  await dbDelete(tabKey(tab.id)).catch(() => {});
+  if (tabs.length === 0) {
+    addTab(createDoc('bitmap', 1024, 768), 'drawing1');
+  } else if (tab === cur) {
+    cur = undefined as unknown as Tab; // stash させない
+    activateTab(tabs[Math.min(idx, tabs.length - 1)]);
+  } else renderTabs();
+  saveTabIndex();
+}
+function renameTab(tab: Tab, name: string) {
+  const n = uniqueTabName(name, tab);
+  if (n === tab.name) return;
+  tab.name = n;
+  // フォルダ名が変わるのでリモートとの対応をやり直す
+  tab.sync = { ...newSyncState(), dirty: tab.sync.dirty, lastEdit: tab.sync.lastEdit };
+  renderTabs();
+  updateSyncStatus();
+  saveTabIndex();
+  scheduleAutosave();
+}
+/** 今のドキュメントを差し替える(GitHub からの取得など) */
+function replaceTabDoc(tab: Tab, d: Doc) {
+  tab.doc = d;
+  tab.history.clear();
+  tab.selectedLayerIds = new Set();
+  tab.toolState = null;
+  tab.zoom = 0;
+  if (tab === cur) {
+    tools.reset();
+    activateTab(tab);
+  }
+}
+function renderTabs() {
+  const el = $('tabs');
+  el.innerHTML = '';
+  for (const t of tabs) {
+    const b = document.createElement('div');
+    b.className = 'tab' + (t === cur ? ' active' : '');
+    b.dataset.id = t.id;
+    b.title = `${t.name}${t.sync.dirty ? '(未同期の変更あり)' : ''}\nダブルタップで名前を変更`;
+    const name = document.createElement('span');
+    name.className = 'tab-name';
+    name.textContent = t.name;
+    const dirty = document.createElement('span');
+    dirty.className = 'dirty';
+    dirty.textContent = t.sync.dirty && sync.gh ? '●' : '';
+    const close = document.createElement('button');
+    close.className = 'close';
+    close.textContent = '×';
+    close.title = '閉じる';
+    close.addEventListener('click', ev => { ev.stopPropagation(); closeTab(t.id); });
+    b.append(name, dirty, close);
+    b.addEventListener('click', () => switchTab(t.id));
+    b.addEventListener('dblclick', () => {
+      const n = prompt('キャンバスの名前(GitHub のフォルダ名になります)', t.name);
+      if (n && n.trim()) renameTab(t, n.trim());
+    });
+    el.appendChild(b);
+  }
+  el.querySelector('.tab.active')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+}
+$('btn-tab-new').addEventListener('click', () => openNewDialog());
 
+// ---------------- ドキュメント ----------------
 const dlgNew = $<HTMLDialogElement>('dlg-new');
-$('btn-new').addEventListener('click', () => dlgNew.showModal());
+function openNewDialog() {
+  $<HTMLInputElement>('new-name').value = uniqueTabName(`drawing${tabs.length + 1}`);
+  dlgNew.showModal();
+}
+$('btn-new').addEventListener('click', openNewDialog);
 $('new-cancel').addEventListener('click', () => dlgNew.close());
 $('new-ok').addEventListener('click', () => {
   const w = Math.max(1, Math.min(8192, Number($<HTMLInputElement>('new-width').value) || 1024));
   const h = Math.max(1, Math.min(8192, Number($<HTMLInputElement>('new-height').value) || 768));
-  if (sync.dirty && !confirm('未保存の変更があります。新規作成しますか?')) return;
-  newDoc($<HTMLSelectElement>('new-kind').value as DocKind, w, h);
+  const kind = $<HTMLSelectElement>('new-kind').value as DocKind;
+  addTab(createDoc(kind, w, h), $<HTMLInputElement>('new-name').value);
   dlgNew.close();
+  saveTab(cur);
+  saveTabIndex();
 });
 
 async function saveProject() {
   tools.commitFloating();
   const { manifest } = await serialize(doc, 'embed');
-  download(new Blob([JSON.stringify(manifest)], { type: 'application/json' }), `${docName}.json`);
+  download(new Blob([JSON.stringify(manifest)], { type: 'application/json' }), `${cur.name}.json`);
 }
 $('btn-save').addEventListener('click', saveProject);
 $('btn-open').addEventListener('click', () => $<HTMLInputElement>('file-open').click());
@@ -785,21 +929,25 @@ $<HTMLInputElement>('file-open').addEventListener('change', async ev => {
   if (!f) return;
   try {
     const m = JSON.parse(await f.text()) as Manifest;
-    loadDoc(await deserialize(m, async () => null), f.name.replace(/\.json$/i, ''));
-    sync.dirty = true;
+    const tab = addTab(await deserialize(m, async () => null), f.name.replace(/\.json$/i, ''));
+    tab.sync.dirty = true;
+    saveTab(tab);
+    saveTabIndex();
   } catch (e) { alert('読み込みに失敗しました: ' + (e as Error).message); }
   (ev.target as HTMLInputElement).value = '';
 });
-$('btn-png').addEventListener('click', () => { tools.commitFloating(); exportPng(doc, docName); });
+$('btn-png').addEventListener('click', () => { tools.commitFloating(); exportPng(doc, cur.name); });
 $('btn-psd').addEventListener('click', async () => {
   tools.commitFloating();
-  try { await exportPsd(doc, docName); } catch (e) { alert('PSD 書き出しに失敗: ' + (e as Error).message); }
+  try { await exportPsd(doc, cur.name); } catch (e) { alert('PSD 書き出しに失敗: ' + (e as Error).message); }
 });
-$('btn-svg').addEventListener('click', () => { tools.commitFloating(); exportSvg(doc, docName); });
+$('btn-svg').addEventListener('click', () => { tools.commitFloating(); exportSvg(doc, cur.name); });
 
 // ---------------- ローカル自動保存 ----------------
 // IndexedDB に保存する(localStorage は容量が小さく、大きな文字列化で描画が止まるため)
-const AUTOSAVE_KEY = 'oekaki.autosave';
+const LEGACY_AUTOSAVE_KEY = 'oekaki.autosave';
+const TAB_INDEX_KEY = 'oekaki.tabs';
+const tabKey = (id: string) => `oekaki.tab.${id}`;
 function openDb(): Promise<IDBDatabase> {
   return new Promise((res, rej) => {
     const req = indexedDB.open('oekaki', 1);
@@ -808,72 +956,104 @@ function openDb(): Promise<IDBDatabase> {
     req.onerror = () => rej(req.error);
   });
 }
-async function dbPut(key: string, value: unknown) {
+async function dbRun<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest<T> | void): Promise<T | undefined> {
   const db = await openDb();
-  await new Promise<void>((res, rej) => {
-    const tx = db.transaction('kv', 'readwrite');
-    tx.objectStore('kv').put(value, key);
-    tx.oncomplete = () => res();
-    tx.onerror = () => rej(tx.error);
-  });
-  db.close();
+  try {
+    return await new Promise<T | undefined>((res, rej) => {
+      const tx = db.transaction('kv', mode);
+      const req = fn(tx.objectStore('kv'));
+      let result: T | undefined;
+      if (req) req.onsuccess = () => { result = req.result; };
+      tx.oncomplete = () => res(result);
+      tx.onerror = () => rej(tx.error);
+    });
+  } finally { db.close(); }
 }
-async function dbGet<T>(key: string): Promise<T | undefined> {
-  const db = await openDb();
-  const v = await new Promise<T | undefined>((res, rej) => {
-    const req = db.transaction('kv').objectStore('kv').get(key);
-    req.onsuccess = () => res(req.result as T | undefined);
-    req.onerror = () => rej(req.error);
-  });
-  db.close();
-  return v;
+const dbPut = (key: string, value: unknown) => dbRun('readwrite', s => { s.put(value, key); });
+const dbGet = <T,>(key: string) => dbRun<T>('readonly', s => s.get(key) as IDBRequest<T>);
+const dbDelete = (key: string) => dbRun('readwrite', s => { s.delete(key); });
+
+function saveTabIndex() {
+  dbPut(TAB_INDEX_KEY, { activeId: cur?.id, tabs: tabs.map(t => ({ id: t.id, name: t.name })) }).catch(() => {});
+}
+async function saveTab(tab: Tab) {
+  try {
+    const { manifest } = await serialize(tab.doc, 'embed');
+    await dbPut(tabKey(tab.id), { name: tab.name, manifest });
+  } catch { /* プライベートブラウズなどで失敗しても無視 */ }
 }
 let autosaveTimer = 0;
+/** 保存待ちのタブ。タブを切り替えると別のタブを保存してしまうので、対象を覚えておく */
+let autosavePending: Tab | null = null;
 function scheduleAutosave() {
+  const tab = cur;
+  if (autosavePending && autosavePending !== tab) saveTab(autosavePending);
+  autosavePending = tab;
   clearTimeout(autosaveTimer);
-  autosaveTimer = window.setTimeout(async () => {
-    try {
-      const { manifest } = await serialize(doc, 'embed');
-      await dbPut(AUTOSAVE_KEY, { name: docName, manifest });
-    } catch { /* プライベートブラウズなどで失敗しても無視 */ }
-  }, 1500);
+  autosaveTimer = window.setTimeout(() => { autosavePending = null; saveTab(tab); saveTabIndex(); }, 1500);
 }
-async function restoreAutosave(): Promise<boolean> {
+/** 保存待ちがあれば今すぐ保存する(タブ切り替え・終了前) */
+function flushAutosave() {
+  if (!autosavePending) return;
+  clearTimeout(autosaveTimer);
+  const tab = autosavePending;
+  autosavePending = null;
+  saveTab(tab);
+  saveTabIndex();
+}
+/** 前回開いていたタブを復元する。1 枚でも復元できたら true */
+async function restoreTabs(): Promise<boolean> {
   try {
-    let saved = await dbGet<{ name: string; manifest: Manifest }>(AUTOSAVE_KEY);
-    if (!saved) {
-      // 旧バージョンの localStorage 保存があれば引き継ぐ
-      const raw = localStorage.getItem(AUTOSAVE_KEY);
-      if (raw) { saved = JSON.parse(raw); localStorage.removeItem(AUTOSAVE_KEY); }
+    const index = await dbGet<{ activeId?: string; tabs: { id: string; name: string }[] }>(TAB_INDEX_KEY);
+    let restoredAny = false;
+    if (index?.tabs?.length) {
+      for (const entry of index.tabs) {
+        const saved = await dbGet<{ name: string; manifest: Manifest }>(tabKey(entry.id));
+        if (!saved) continue;
+        addTab(await deserialize(saved.manifest, async () => null), saved.name || entry.name, { activate: false, id: entry.id });
+        restoredAny = true;
+      }
+      const active = tabs.find(t => t.id === index.activeId) ?? tabs[0];
+      if (active) activateTab(active);
     }
-    if (!saved) return false;
-    loadDoc(await deserialize(saved.manifest, async () => null), saved.name);
-    return true;
+    // 旧バージョン(タブなし)の保存があれば引き継ぐ
+    const legacy = await dbGet<{ name: string; manifest: Manifest }>(LEGACY_AUTOSAVE_KEY);
+    if (legacy) {
+      addTab(await deserialize(legacy.manifest, async () => null), legacy.name, { activate: !restoredAny });
+      await dbDelete(LEGACY_AUTOSAVE_KEY);
+      restoredAny = true;
+      saveTab(cur);
+      saveTabIndex();
+    }
+    return restoredAny;
   } catch { return false; }
 }
 
 function markDirty() {
-  sync.dirty = true;
-  sync.lastEdit = Date.now();
+  cur.sync.dirty = true;
+  cur.sync.lastEdit = Date.now();
   scheduleLayerPanel();
   scheduleAutosave();
   updateSyncStatus();
+  renderTabs();
 }
-window.addEventListener('beforeunload', ev => { if (sync.dirty && sync.gh) ev.preventDefault(); });
+window.addEventListener('beforeunload', ev => { flushAutosave(); if (sync.gh && tabs.some(t => t.sync.dirty)) ev.preventDefault(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushAutosave(); });
 
 // ---------------- GitHub 同期 ----------------
 const GH_KEY = 'oekaki.github';
 const sync = {
+  cfg: null as (GhConfig & { auto: boolean }) | null,
   gh: null as GitHubSync | null,
   auto: true,
-  lastSha: null as string | null,
-  /** 一度でも pull/push に成功していれば true(自動プッシュの条件) */
-  synced: false,
-  dirty: false,
-  lastEdit: 0,
-  busy: false,
-  conflict: false,
 };
+/** タブごとのフォルダを向いたクライアントを作る */
+function ghFor(tab: Tab): GitHubSync | null {
+  if (!sync.cfg || !sync.gh) return null;
+  const g = new GitHubSync({ ...sync.cfg, dir: tab.name });
+  g.knownPaths = tab.sync.knownPaths;
+  return g;
+}
 function setStatus(msg: string, cls: '' | 'ok' | 'err' = '') {
   const el = $('sync-status');
   el.textContent = msg;
@@ -883,54 +1063,59 @@ function setStatus(msg: string, cls: '' | 'ok' | 'err' = '') {
 function updateSyncStatus() {
   if (!sync.gh) { setStatus(''); $('btn-sync-now').hidden = true; return; }
   $('btn-sync-now').hidden = false;
-  if (sync.busy || sync.conflict) return;
-  if (!sync.synced) setStatus('GitHub: 未同期(プルかプッシュを実行)');
-  else if (sync.dirty) setStatus('GitHub: 変更あり' + (sync.auto ? '(自動プッシュ待ち)' : ''));
-  else setStatus('GitHub: 同期済み', 'ok');
+  const s = cur.sync;
+  if (s.busy) return;
+  if (s.conflict) setStatus(`GitHub(${cur.name}): 競合。プル(ローカル破棄)か強制プッシュを選んでください`, 'err');
+  else if (!s.synced) setStatus(`GitHub(${cur.name}): 未同期(プルかプッシュを実行)`);
+  else if (s.dirty) setStatus(`GitHub(${cur.name}): 変更あり` + (sync.auto ? '(自動プッシュ待ち)' : ''));
+  else setStatus(`GitHub(${cur.name}): 同期済み`, 'ok');
 }
 function loadGhConfig(): (GhConfig & { auto: boolean }) | null {
   try { return JSON.parse(localStorage.getItem(GH_KEY) || 'null'); } catch { return null; }
 }
 function applyGhConfig(cfg: (GhConfig & { auto: boolean }) | null) {
+  sync.cfg = cfg;
   sync.gh = cfg && cfg.token && cfg.owner && cfg.repo ? new GitHubSync(cfg) : null;
   sync.auto = cfg?.auto ?? true;
-  if (cfg?.dir) docName = cfg.dir;
-  sync.lastSha = null;
-  sync.synced = false;
-  sync.conflict = false;
+  for (const t of tabs) t.sync = { ...newSyncState(), dirty: t.sync.dirty, lastEdit: t.sync.lastEdit };
   updateSyncStatus();
+  renderTabs();
 }
-async function push(force = false) {
-  if (!sync.gh || sync.busy || tools.busy) return;
-  sync.busy = true;
-  tools.commitFloating();
-  setStatus('GitHub: プッシュ中…');
+async function push(tab: Tab, force = false) {
+  const gh = ghFor(tab);
+  const s = tab.sync;
+  if (!gh || s.busy || (tab === cur && tools.busy)) return;
+  s.busy = true;
+  if (tab === cur) { tools.commitFloating(); setStatus(`GitHub(${tab.name}): プッシュ中…`); }
   try {
-    const { manifest, files } = await serialize(doc, 'files');
+    const { manifest, files } = await serialize(tab.doc, 'files');
     const repoFiles = [
       { path: PROJECT_FILE, content: JSON.stringify(manifest) },
       ...(await Promise.all(files.map(async f => ({ path: f.path, content: new Uint8Array(await f.blob.arrayBuffer()) })))),
     ];
-    sync.lastSha = await sync.gh.commitFiles(repoFiles, `update ${docName} ${new Date().toISOString()}`, { expectedHead: sync.lastSha, force });
-    sync.dirty = false;
-    sync.synced = true;
-    sync.conflict = false;
-    setStatus('GitHub: 同期済み', 'ok');
+    s.lastSha = await gh.commitFiles(repoFiles, `update ${tab.name} ${new Date().toISOString()}`, { expectedHead: s.lastSha, force });
+    s.knownPaths = gh.knownPaths;
+    s.dirty = false;
+    s.synced = true;
+    s.conflict = false;
   } catch (e) {
-    if (e instanceof ConflictError) {
-      sync.conflict = true;
-      setStatus('GitHub: 競合。プル(ローカル破棄)か強制プッシュを選んでください', 'err');
-    } else setStatus('GitHub: エラー ' + (e as Error).message, 'err');
+    if (e instanceof ConflictError) s.conflict = true;
+    else if (tab === cur) setStatus(`GitHub(${tab.name}): エラー ` + (e as Error).message, 'err');
   } finally {
-    sync.busy = false;
+    s.busy = false;
+    if (tab === cur) updateSyncStatus();
+    renderTabs();
   }
 }
-async function pull() {
-  if (!sync.gh || sync.busy || tools.busy) return;
-  sync.busy = true;
-  setStatus('GitHub: 取得中…');
+async function pull(tab: Tab) {
+  const gh = ghFor(tab);
+  const s = tab.sync;
+  if (!gh || s.busy || (tab === cur && tools.busy)) return;
+  s.busy = true;
+  if (tab === cur) setStatus(`GitHub(${tab.name}): 取得中…`);
   try {
-    const { sha, files } = await sync.gh.pull();
+    const { sha, files } = await gh.pull();
+    s.knownPaths = gh.knownPaths;
     const pj = files.get(PROJECT_FILE);
     if (pj) {
       const manifest = JSON.parse(new TextDecoder().decode(pj)) as Manifest;
@@ -938,33 +1123,37 @@ async function pull() {
         const u8 = files.get(p);
         return u8 ? new Blob([u8 as BlobPart], { type: 'image/png' }) : null;
       });
-      loadDoc(d, sync.gh.cfg.dir);
-      setStatus('GitHub: 取得しました', 'ok');
-    } else {
-      setStatus('GitHub: リモートにプロジェクトがありません(プッシュで作成)');
+      replaceTabDoc(tab, d);
+      saveTab(tab);
     }
-    sync.lastSha = sha;
-    sync.dirty = false;
-    sync.synced = true;
-    sync.conflict = false;
-    scheduleAutosave();
+    s.lastSha = sha;
+    s.dirty = false;
+    s.synced = true;
+    s.conflict = false;
+    if (tab === cur) setStatus(pj ? `GitHub(${tab.name}): 取得しました` : `GitHub(${tab.name}): リモートにまだありません(プッシュで作成)`, pj ? 'ok' : '');
   } catch (e) {
-    setStatus('GitHub: エラー ' + (e as Error).message, 'err');
+    if (tab === cur) setStatus(`GitHub(${tab.name}): エラー ` + (e as Error).message, 'err');
   } finally {
-    sync.busy = false;
+    s.busy = false;
+    renderTabs();
   }
 }
+/** すべてのタブについて、変更があればプッシュ、リモートが進んでいればプル */
 async function autoSyncTick() {
-  if (!sync.gh || !sync.auto || sync.busy || sync.conflict || tools.busy || !navigator.onLine) return;
-  if (sync.dirty) {
-    if (sync.synced && Date.now() - sync.lastEdit > 4000) await push();
-    return;
+  if (!sync.gh || !sync.auto || !navigator.onLine) return;
+  for (const tab of [...tabs]) {
+    const s = tab.sync;
+    if (s.busy || s.conflict || (tab === cur && tools.busy)) continue;
+    if (s.dirty) {
+      if (s.synced && Date.now() - s.lastEdit > 4000) await push(tab);
+      continue;
+    }
+    if (!s.synced) continue;
+    try {
+      const head = await ghFor(tab)!.getHead();
+      if (head !== s.lastSha) await pull(tab);
+    } catch { /* 次回に再試行 */ }
   }
-  if (!sync.synced) return;
-  try {
-    const head = await sync.gh.getHead();
-    if (head !== sync.lastSha) await pull();
-  } catch { /* 次回に再試行 */ }
 }
 setInterval(autoSyncTick, 10_000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) autoSyncTick(); });
@@ -976,8 +1165,9 @@ $('btn-github').addEventListener('click', () => {
   $<HTMLInputElement>('gh-owner').value = cfg?.owner ?? '';
   $<HTMLInputElement>('gh-repo').value = cfg?.repo ?? '';
   $<HTMLInputElement>('gh-branch').value = cfg?.branch ?? 'main';
-  $<HTMLInputElement>('gh-dir').value = cfg?.dir ?? 'drawing1';
+  $<HTMLInputElement>('gh-dir').value = cur.name;
   $<HTMLInputElement>('gh-auto').checked = cfg?.auto ?? true;
+  updateSyncStatus();
   dlgGh.showModal();
 });
 function readGhForm(): GhConfig & { auto: boolean } {
@@ -986,30 +1176,37 @@ function readGhForm(): GhConfig & { auto: boolean } {
     owner: $<HTMLInputElement>('gh-owner').value.trim(),
     repo: $<HTMLInputElement>('gh-repo').value.trim(),
     branch: $<HTMLInputElement>('gh-branch').value.trim() || 'main',
-    dir: $<HTMLInputElement>('gh-dir').value.trim().replace(/^\/+|\/+$/g, ''),
+    dir: '',
     auto: $<HTMLInputElement>('gh-auto').checked,
   };
 }
+/** 設定フォームを保存する。接続先が変わったときだけ同期状態をリセットする */
 function saveGhForm() {
   const cfg = readGhForm();
+  const prev = sync.cfg;
+  const changed = !prev || prev.token !== cfg.token || prev.owner !== cfg.owner || prev.repo !== cfg.repo || prev.branch !== cfg.branch;
   localStorage.setItem(GH_KEY, JSON.stringify(cfg));
-  applyGhConfig(cfg);
+  if (changed) applyGhConfig(cfg);
+  else { sync.cfg = cfg; sync.auto = cfg.auto; }
+  const dir = $<HTMLInputElement>('gh-dir').value.trim().replace(/^\/+|\/+$/g, '');
+  if (dir && dir !== cur.name) renameTab(cur, dir);
+  updateSyncStatus();
 }
 $('gh-save').addEventListener('click', () => { saveGhForm(); dlgGh.close(); });
 $('gh-close').addEventListener('click', () => dlgGh.close());
 $('gh-pull').addEventListener('click', async () => {
   saveGhForm();
-  if (sync.dirty && !confirm('ローカルの変更を破棄してリモートを取得しますか?')) return;
-  sync.conflict = false;
-  await pull();
+  if (cur.sync.dirty && !confirm('このタブのローカルの変更を破棄してリモートを取得しますか?')) return;
+  cur.sync.conflict = false;
+  await pull(cur);
 });
-$('gh-push').addEventListener('click', async () => { saveGhForm(); await push(); });
+$('gh-push').addEventListener('click', async () => { saveGhForm(); await push(cur); });
 $('gh-force-push').addEventListener('click', async () => {
   saveGhForm();
   if (!confirm('リモートの内容を上書きします。よろしいですか?')) return;
-  await push(true);
+  await push(cur, true);
 });
-$('btn-sync-now').addEventListener('click', () => (sync.dirty ? push() : pull()));
+$('btn-sync-now').addEventListener('click', () => (cur.sync.dirty ? push(cur) : pull(cur)));
 
 // ---------------- 起動 ----------------
 async function boot() {
@@ -1018,13 +1215,13 @@ async function boot() {
   renderToolbar();
   setTool('pen');
   renderPalette();
+  const restored = await restoreTabs();
+  if (!restored) addTab(createDoc('bitmap', 1024, 768), 'drawing1');
   applyGhConfig(loadGhConfig());
-  const restored = await restoreAutosave();
-  if (!restored) loadDoc(doc);
   if (sync.gh && sync.auto) {
-    // 起動時はリモート優先。リモートが空ならローカルを保持
-    await pull();
-    if (restored && !sync.dirty && sync.synced) { /* pulled */ }
+    // 起動時はリモート優先。リモートにないタブはローカルのまま
+    for (const t of [...tabs]) await pull(t);
+    updateSyncStatus();
   }
   afterEdit();
 }
