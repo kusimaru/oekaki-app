@@ -55,6 +55,7 @@ input, select { font: inherit; background: #222; color: var(--text); border: 1px
 .swatch:hover .del { display: block; }
 #layers { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
 .layer { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 6px; background: #2f2f2f; border: 1px solid transparent; cursor: pointer; }
+.layer.selected { background: #3a3a3a; border-color: #6a6a6a; }
 .layer.active { border-color: var(--accent); background: #3d3a2c; }
 .layer { position: relative; }
 .layer .grip { color: var(--muted); font-size: 16px; line-height: 1; padding: 6px 4px; margin: -6px 0 -6px -4px; cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }

@@ -1,6 +1,6 @@
-import type { Doc, DocKind, InputInfo, Pt, Rgba, ToolId, ToolOptions } from './types';
+import type { Doc, DocKind, InputInfo, Layer, Pt, Rgba, ToolId, ToolOptions } from './types';
 import { BASIC_COLORS, css, fromHex, hex, same } from './color';
-import { activeLayer, composite, compositeToCanvas, createDoc, createLayer, ctx2d, rasterizeLayer, uid } from './document';
+import { activeLayer, composite, compositeToCanvas, createDoc, createLayer, ctx2d, makeCanvas, rasterizeLayer, uid } from './document';
 import { History, layersState, snap } from './history';
 import { Tools, type AppCtx } from './tools';
 import { download, exportPng, exportPsd, exportSvg } from './exporters';
@@ -529,51 +529,85 @@ function scheduleLayerPanel() {
   clearTimeout(layerPanelTimer);
   layerPanelTimer = window.setTimeout(renderLayers, 250);
 }
-function setActiveLayer(id: string) {
-  if (doc.activeLayerId === id) return;
+/** 選択中のレイヤー id(アクティブレイヤーを必ず含む) */
+let selectedLayerIds = new Set<string>();
+/** iPad 向け: ON のあいだはタップで選択の追加 / 解除になる */
+let multiSelectMode = false;
+/** レイヤー構成が変わった後に選択を整える */
+function syncLayerSelection() {
+  const ids = new Set(doc.layers.map(l => l.id));
+  for (const id of [...selectedLayerIds]) if (!ids.has(id)) selectedLayerIds.delete(id);
+  if (!ids.has(doc.activeLayerId)) doc.activeLayerId = doc.layers[doc.layers.length - 1].id;
+  selectedLayerIds.add(doc.activeLayerId);
+}
+const selectedLayers = () => doc.layers.filter(l => selectedLayerIds.has(l.id));
+
+function setActiveLayer(id: string, opts: { toggle?: boolean; range?: boolean } = {}) {
   tools.cancel();
   tools.commitFloating();
   tools.selectedShapes.clear();
-  doc.activeLayerId = id;
+  if (opts.toggle) {
+    if (selectedLayerIds.has(id)) {
+      if (selectedLayerIds.size > 1) {
+        selectedLayerIds.delete(id);
+        if (doc.activeLayerId === id) doc.activeLayerId = [...selectedLayerIds][0];
+      }
+    } else {
+      selectedLayerIds.add(id);
+      doc.activeLayerId = id;
+    }
+  } else if (opts.range) {
+    const a = doc.layers.findIndex(l => l.id === doc.activeLayerId);
+    const b = doc.layers.findIndex(l => l.id === id);
+    for (let i = Math.min(a, b); i <= Math.max(a, b); i++) selectedLayerIds.add(doc.layers[i].id);
+    doc.activeLayerId = id;
+  } else {
+    selectedLayerIds = new Set([id]);
+    doc.activeLayerId = id;
+  }
   renderLayers();
   requestRender();
 }
-/** レイヤー行の「≡」つまみをドラッグして並べ替える(ペン・指・マウス共通) */
+
+/** レイヤー行の「≡」つまみをドラッグして並べ替える(ペン・指・マウス共通)。選択中の行はまとめて動く */
 function attachLayerDrag(handle: HTMLElement, row: HTMLElement, layerId: string) {
   handle.addEventListener('pointerdown', ev => {
     ev.preventDefault();
     ev.stopPropagation();
     try { handle.setPointerCapture(ev.pointerId); } catch { /* 合成イベントでは失敗する */ }
     const list = $('layers');
-    const others = () => [...list.querySelectorAll<HTMLElement>('.layer')].filter(r => r !== row);
+    const groupIds = selectedLayerIds.has(layerId) ? new Set(selectedLayerIds) : new Set([layerId]);
+    const allRows = [...list.querySelectorAll<HTMLElement>('.layer')];
+    const groupRows = allRows.filter(r => groupIds.has(r.dataset.id!));
+    const others = allRows.filter(r => !groupIds.has(r.dataset.id!));
     let insertAt = -1; // 他の行(上から順)の何番目の前に入れるか。others.length なら末尾
-    const clearMarks = () => others().forEach(r => r.classList.remove('drop-before', 'drop-after'));
+    const clearMarks = () => others.forEach(r => r.classList.remove('drop-before', 'drop-after'));
     const onMove = (e: PointerEvent) => {
-      row.classList.add('dragging');
-      const rows = others();
-      insertAt = rows.length;
-      for (let i = 0; i < rows.length; i++) {
-        const b = rows[i].getBoundingClientRect();
+      groupRows.forEach(r => r.classList.add('dragging'));
+      insertAt = others.length;
+      for (let i = 0; i < others.length; i++) {
+        const b = others[i].getBoundingClientRect();
         if (e.clientY < b.top + b.height / 2) { insertAt = i; break; }
       }
       clearMarks();
-      if (insertAt < rows.length) rows[insertAt].classList.add('drop-before');
-      else if (rows.length) rows[rows.length - 1].classList.add('drop-after');
+      if (insertAt < others.length) others[insertAt].classList.add('drop-before');
+      else if (others.length) others[others.length - 1].classList.add('drop-after');
     };
     const onUp = () => {
       handle.removeEventListener('pointermove', onMove);
       handle.removeEventListener('pointerup', onUp);
       handle.removeEventListener('pointercancel', onUp);
-      row.classList.remove('dragging');
+      groupRows.forEach(r => r.classList.remove('dragging'));
       clearMarks();
       if (insertAt < 0) return;
-      const rows = others();
       tools.commitFloating();
       withLayersHistory(() => {
-        const layer = doc.layers.find(l => l.id === layerId)!;
-        const rest = doc.layers.filter(l => l.id !== layerId);
-        // パネルは上が最後尾なので、上から insertAt 番目 = 配列の (rest.length - insertAt) 番目
-        rest.splice(rows.length - insertAt, 0, layer);
+        const group = doc.layers.filter(l => groupIds.has(l.id));
+        const rest = doc.layers.filter(l => !groupIds.has(l.id));
+        // パネルは上が最後尾。「行 X の上に入れる」= 配列で X の直後、末尾(一番下)なら 0
+        const anchorId = insertAt < others.length ? others[insertAt].dataset.id : null;
+        const at = anchorId ? rest.findIndex(l => l.id === anchorId) + 1 : 0;
+        rest.splice(at, 0, ...group);
         doc.layers = rest;
       });
     };
@@ -583,12 +617,42 @@ function attachLayerDrag(handle: HTMLElement, row: HTMLElement, layerId: string)
   });
 }
 
+/** 選択中のレイヤーを 1 枚に結合する(下にあるレイヤーが残る) */
+function mergeSelectedLayers() {
+  const members = selectedLayers();
+  if (members.length < 2) { setStatus('結合するにはレイヤーを 2 枚以上選択してください'); return; }
+  tools.cancel(); tools.commitFloating(); tools.selectedShapes.clear();
+  withLayersHistory(() => {
+    const target = members[0];
+    let merged: Layer;
+    if (target.kind === 'bitmap') {
+      // 各レイヤーの不透明度を焼き込んで合成。非表示のレイヤーは捨てる(Photoshop と同じ)
+      const c = makeCanvas(doc.width, doc.height);
+      const cx = ctx2d(c);
+      for (const m of members) {
+        if (!m.visible) continue;
+        cx.globalAlpha = m.opacity;
+        cx.drawImage(m.kind === 'bitmap' ? m.canvas : rasterizeLayer(doc, m), 0, 0);
+      }
+      merged = { ...target, canvas: c, opacity: 1, visible: true };
+    } else {
+      merged = { ...target, shapes: members.flatMap(m => (m.kind === 'vector' && m.visible ? structuredClone(m.shapes) : [])) };
+    }
+    doc.layers = doc.layers.filter(l => l === target || !selectedLayerIds.has(l.id)).map(l => (l === target ? merged : l));
+    doc.activeLayerId = merged.id;
+    selectedLayerIds = new Set([merged.id]);
+  });
+}
+
 function renderLayers() {
+  syncLayerSelection();
   const el = $('layers');
   el.innerHTML = '';
+  $('btn-layer-multi').classList.toggle('active', multiSelectMode);
   for (const l of [...doc.layers].reverse()) {
     const row = document.createElement('div');
-    row.className = 'layer' + (l.id === doc.activeLayerId ? ' active' : '');
+    row.className = 'layer' + (l.id === doc.activeLayerId ? ' active' : '') + (selectedLayerIds.has(l.id) ? ' selected' : '');
+    row.dataset.id = l.id;
     const handle = document.createElement('span');
     handle.className = 'grip';
     handle.textContent = '≡';
@@ -619,7 +683,7 @@ function renderLayers() {
     op.addEventListener('change', markDirty);
     op.addEventListener('pointerdown', ev => ev.stopPropagation());
     row.append(eye, thumb, name, op);
-    row.addEventListener('click', () => setActiveLayer(l.id));
+    row.addEventListener('click', ev => setActiveLayer(l.id, { toggle: ev.ctrlKey || ev.metaKey || multiSelectMode, range: ev.shiftKey }));
     el.appendChild(row);
   }
   $('doc-info').textContent = `${doc.kind === 'bitmap' ? 'ビットマップ' : 'ベジェ'} ${doc.width}×${doc.height}`;
@@ -637,6 +701,7 @@ function addLayerAbove(name: string) {
   const l = createLayer(doc.kind, doc.width, doc.height, name);
   doc.layers.splice(idx + 1, 0, l);
   doc.activeLayerId = l.id;
+  selectedLayerIds = new Set([l.id]);
   return l;
 }
 $('btn-layer-add').addEventListener('click', () => {
@@ -645,21 +710,30 @@ $('btn-layer-add').addEventListener('click', () => {
   withLayersHistory(() => addLayerAbove(`レイヤー ${doc.layers.length + 1}`));
 });
 $('btn-layer-del').addEventListener('click', () => {
-  if (doc.layers.length <= 1) return;
+  const ids = new Set(selectedLayerIds);
+  if (doc.layers.length - ids.size < 1) { setStatus('すべてのレイヤーは削除できません(1 枚は残ります)'); return; }
   tools.cancel(); tools.commitFloating(); tools.selectedShapes.clear();
   withLayersHistory(() => {
-    const idx = doc.layers.findIndex(l => l.id === doc.activeLayerId);
-    doc.layers.splice(idx, 1);
+    const idx = doc.layers.findIndex(l => ids.has(l.id));
+    doc.layers = doc.layers.filter(l => !ids.has(l.id));
     doc.activeLayerId = doc.layers[Math.min(idx, doc.layers.length - 1)].id;
+    selectedLayerIds = new Set([doc.activeLayerId]);
   });
 });
+/** 選択中のレイヤーをまとめて 1 段動かす(上 = 配列の後ろ) */
 const moveLayer = (dir: 1 | -1) => {
   tools.commitFloating();
-  const idx = doc.layers.findIndex(l => l.id === doc.activeLayerId);
-  const j = idx + dir;
-  if (j < 0 || j >= doc.layers.length) return;
-  withLayersHistory(() => { [doc.layers[idx], doc.layers[j]] = [doc.layers[j], doc.layers[idx]]; });
+  const idxs = doc.layers.map((l, i) => (selectedLayerIds.has(l.id) ? i : -1)).filter(i => i >= 0);
+  if (!idxs.length) return;
+  if (dir === 1 && Math.max(...idxs) + 1 >= doc.layers.length) return;
+  if (dir === -1 && Math.min(...idxs) - 1 < 0) return;
+  withLayersHistory(() => {
+    const order = dir === 1 ? [...idxs].reverse() : idxs;
+    for (const i of order) [doc.layers[i], doc.layers[i + dir]] = [doc.layers[i + dir], doc.layers[i]];
+  });
 };
+$('btn-layer-multi').addEventListener('click', () => { multiSelectMode = !multiSelectMode; renderLayers(); });
+$('btn-layer-merge').addEventListener('click', mergeSelectedLayers);
 $('btn-layer-up').addEventListener('click', () => moveLayer(1));
 $('btn-layer-down').addEventListener('click', () => moveLayer(-1));
 $('btn-layer-rename').addEventListener('click', () => {
@@ -673,6 +747,7 @@ function loadDoc(d: Doc, name?: string) {
   tools.reset();
   history.clear();
   doc = d;
+  selectedLayerIds = new Set();
   if (name) docName = name;
   renderPalette();
   renderLayers();
