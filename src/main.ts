@@ -1852,6 +1852,24 @@ async function bootSync() {
   renderTabs();
 }
 
+// ---------------- 新しい版の確認 ----------------
+/** 公開先の version.json と自分のビルド識別子を比べ、違えば更新を促す(iPad のホーム画面アプリは古い版を持ち続けるため) */
+async function checkForUpdate() {
+  try {
+    const r = await fetch(`./version.json?_=${Date.now()}`, { cache: 'no-store' });
+    if (!r.ok) return;
+    const { build } = await r.json();
+    if (build && build !== __BUILD_ID__) $('update-banner').hidden = false;
+  } catch { /* オフラインなどは無視 */ }
+}
+$('btn-update').addEventListener('click', () => {
+  flushAutosave();
+  // キャッシュされた古い index.html を避けるため、URL を変えて読み直す
+  location.href = location.pathname + '?u=' + Date.now();
+});
+setInterval(checkForUpdate, 10 * 60_000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkForUpdate(); });
+
 // ---------------- 起動 ----------------
 async function boot() {
   new ResizeObserver(resizeView).observe(viewport);
@@ -1863,6 +1881,7 @@ async function boot() {
   if (!restored) addTab(createDoc('bitmap', 1024, 768), 'drawing1', DEFAULT_NOTEBOOK, DEFAULT_SECTION);
   applyGhConfig(loadGhConfig());
   afterEdit();
+  setTimeout(checkForUpdate, 3000);
   await bootSync();
 }
 boot();
