@@ -40,7 +40,7 @@ export interface Selection {
 }
 
 export type ToolId =
-  | 'select' | 'lasso' | 'move' | 'rotate' | 'scale'
+  | 'select' | 'lasso' | 'move' | 'rotate' | 'transform'
   | 'pen' | 'eraser' | 'bucket' | 'eyedropper'
   | 'line' | 'rect' | 'ellipse' | 'hand' | 'zoom';
 
@@ -53,4 +53,4 @@ export interface ToolOptions {
   sampleAll: boolean;
 }
 
-export interface InputInfo { pressure: number; pen: boolean; shift: boolean; }
+export interface InputInfo { pressure: number; pen: boolean; shift: boolean; alt: boolean; }

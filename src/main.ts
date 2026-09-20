@@ -182,7 +182,7 @@ function toDoc(ev: { clientX: number; clientY: number }): Pt {
   const r = view.getBoundingClientRect();
   return { x: (ev.clientX - r.left - panX) / zoom, y: (ev.clientY - r.top - panY) / zoom };
 }
-const info = (ev: PointerEvent): InputInfo => ({ pressure: ev.pressure, pen: ev.pointerType === 'pen', shift: ev.shiftKey });
+const info = (ev: PointerEvent): InputInfo => ({ pressure: ev.pressure, pen: ev.pointerType === 'pen', shift: ev.shiftKey, alt: ev.altKey });
 
 /** 指(タッチ)のポインタだけを追跡。ペンとマウスは drawId / panId で管理する */
 const touchPts = new Map<number, Pt>();
@@ -281,9 +281,13 @@ view.addEventListener('pointermove', ev => {
   } else if (mode === 'draw' && ev.pointerId === drawId) {
     const events = typeof ev.getCoalescedEvents === 'function' && ev.getCoalescedEvents().length ? ev.getCoalescedEvents() : [ev];
     for (const e of events) tools.move(toDoc(e), info(e));
+  } else if (mode === 'none' && tools.tool === 'transform' && ev.pointerType !== 'touch') {
+    view.style.cursor = tools.hoverCursor(toDoc(ev));
   }
   requestRender();
 });
+// 枠内ダブルクリックで変形を確定(Photoshop と同じ)
+view.addEventListener('dblclick', () => { if (tools.tool === 'transform') { tools.commitTransform(); afterEdit(); } });
 
 function pointerEnd(ev: PointerEvent) {
   touchPts.delete(ev.pointerId);
@@ -326,7 +330,7 @@ const TOOL_DEFS: ToolDef[] = [
   { id: 'rect', label: '長方形', key: 'U で切替' },
   { id: 'ellipse', label: '楕円', key: 'U で切替' },
   { id: 'line', label: 'ライン', key: 'U で切替' },
-  { id: 'scale', label: '自由変形(拡大・縮小)', key: 'Ctrl+T' },
+  { id: 'transform', label: '自由変形(角: 拡大縮小 / 枠の外: 回転 / 中: 移動、Enter で確定)', key: 'Ctrl+T' },
   { id: 'rotate', label: '回転', key: 'R' },
   { id: 'hand', label: '手のひら', key: 'H / Space' },
   { id: 'zoom', label: 'ズーム(Alt+クリックで縮小)', key: 'Z' },
@@ -337,7 +341,7 @@ function loadToolOrder(): ToolId[] {
   try {
     const saved = JSON.parse(localStorage.getItem(TOOL_ORDER_KEY) || 'null');
     if (Array.isArray(saved)) {
-      const valid = saved.filter((id: ToolId) => all.includes(id));
+      const valid = (saved as string[]).map(id => (id === 'scale' ? 'transform' : id)).filter((id): id is ToolId => (all as string[]).includes(id));
       return [...valid, ...all.filter(id => !valid.includes(id))];
     }
   } catch { /* ignore */ }
@@ -413,7 +417,7 @@ function setBrushSize(n: number) {
 }
 const brushStep = (s: number) => (s < 10 ? 1 : s < 50 ? 5 : 10);
 function selectAll() {
-  tools.commitFloating();
+  tools.commitTransform();
   const layer = activeLayer(doc);
   if (layer.kind === 'vector') layer.shapes.forEach(s => tools.selectedShapes.add(s.id));
   else tools.selection = { kind: 'rect', points: [{ x: 0, y: 0 }, { x: doc.width, y: doc.height }] };
@@ -425,7 +429,7 @@ function doCut() { if (!tools.cut()) setStatus('カットするものがあり�
 function doPaste() {
   const clip = tools.clipboard;
   if (!clip) { setStatus('クリップボードが空です'); return; }
-  tools.commitFloating();
+  tools.commitTransform();
   const layer = activeLayer(doc);
   if (clip.kind === 'bitmap' && doc.kind === 'bitmap') {
     // Photoshop と同じく新しいレイヤーに、元の位置へ貼り付ける
@@ -460,8 +464,8 @@ $('btn-copy').addEventListener('click', doCopy);
 $('btn-paste').addEventListener('click', doPaste);
 $('btn-delete').addEventListener('click', () => { tools.deleteSelection(); afterEdit(); });
 $('btn-select-all').addEventListener('click', () => selectAll());
-$('btn-deselect').addEventListener('click', () => { tools.cancel(); tools.deselect(); afterEdit(); });
-$('btn-commit').addEventListener('click', () => { tools.commitFloating(); afterEdit(); });
+$('btn-deselect').addEventListener('click', () => { tools.escape(); afterEdit(); });
+$('btn-commit').addEventListener('click', () => { tools.commitTransform(); afterEdit(); });
 
 function zoomCenter(factor: number) {
   const r = view.getBoundingClientRect();
@@ -479,7 +483,7 @@ window.addEventListener('keydown', ev => {
       case 'z': ev.shiftKey ? redo() : undo(); break;           // Ctrl+Z / Ctrl+Shift+Z(Ctrl+Alt+Z も取り消し)
       case 'y': redo(); break;
       case 's': saveProject(); break;
-      case 't': setTool('scale'); break;                         // 自由変形
+      case 't': setTool('transform'); break;                     // 自由変形
       case 'd': tools.deselect(); afterEdit(); break;            // 選択解除
       case 'a': selectAll(); break;                              // すべてを選択
       case 'x': doCut(); break;
@@ -505,14 +509,14 @@ window.addEventListener('keydown', ev => {
   if (k === '[') { setBrushSize(options.size - brushStep(options.size)); return; }
   if (k === ']') { setBrushSize(options.size + brushStep(options.size)); return; }
   if (k === 'd') { setColor({ r: 0, g: 0, b: 0, a: 1 }); return; }   // 初期設定の色
-  if (k === 'enter') { tools.commitFloating(); afterEdit(); }
-  else if (k === 'escape') { tools.cancel(); tools.deselect(); afterEdit(); }
+  if (k === 'enter') { tools.commitTransform(); afterEdit(); }
+  else if (k === 'escape') { tools.escape(); afterEdit(); }
   else if (k === 'delete' || k === 'backspace') { tools.deleteSelection(); afterEdit(); }
 });
 window.addEventListener('keyup', ev => { if (ev.code === 'Space') spaceDown = false; });
 
-function undo() { tools.cancel(); tools.commitFloating(); if (history.undo(doc)) { markDirty(); afterEdit(); } }
-function redo() { tools.cancel(); tools.commitFloating(); if (history.redo(doc)) { markDirty(); afterEdit(); } }
+function undo() { tools.cancel(); tools.commitTransform(); if (history.undo(doc)) { markDirty(); afterEdit(); } }
+function redo() { tools.cancel(); tools.commitTransform(); if (history.redo(doc)) { markDirty(); afterEdit(); } }
 $('btn-undo').addEventListener('click', undo);
 $('btn-redo').addEventListener('click', redo);
 $('btn-zoom-in').addEventListener('click', () => zoomCenter(1.25));
@@ -600,7 +604,7 @@ const selectedLayers = () => doc.layers.filter(l => selectedLayerIds.has(l.id));
 
 function setActiveLayer(id: string, opts: { toggle?: boolean; range?: boolean } = {}) {
   tools.cancel();
-  tools.commitFloating();
+  tools.commitTransform();
   tools.selectedShapes.clear();
   if (opts.toggle) {
     if (selectedLayerIds.has(id)) {
@@ -656,7 +660,7 @@ function attachLayerDrag(handle: HTMLElement, row: HTMLElement, layerId: string)
       groupRows.forEach(r => r.classList.remove('dragging'));
       clearMarks();
       if (insertAt < 0) return;
-      tools.commitFloating();
+      tools.commitTransform();
       withLayersHistory(() => {
         const group = doc.layers.filter(l => groupIds.has(l.id));
         const rest = doc.layers.filter(l => !groupIds.has(l.id));
@@ -677,7 +681,7 @@ function attachLayerDrag(handle: HTMLElement, row: HTMLElement, layerId: string)
 function mergeSelectedLayers() {
   const members = selectedLayers();
   if (members.length < 2) { setStatus('結合するにはレイヤーを 2 枚以上選択してください'); return; }
-  tools.cancel(); tools.commitFloating(); tools.selectedShapes.clear();
+  tools.cancel(); tools.commitTransform(); tools.selectedShapes.clear();
   withLayersHistory(() => {
     const target = members[0];
     let merged: Layer;
@@ -725,7 +729,7 @@ function renderLayers() {
     lock.className = 'lock' + (l.locked ? ' on' : '');
     lock.textContent = l.locked ? '🔒' : '🔓';
     lock.title = l.locked ? 'ロック中(押して解除)' : '書き込み禁止にする';
-    lock.addEventListener('click', ev => { ev.stopPropagation(); l.locked = !l.locked; if (l.locked) { tools.cancel(); tools.commitFloating(); } markDirty(); renderLayers(); });
+    lock.addEventListener('click', ev => { ev.stopPropagation(); l.locked = !l.locked; if (l.locked) { tools.cancel(); tools.commitTransform(); } markDirty(); renderLayers(); });
     row.classList.toggle('locked', !!l.locked);
     const thumb = document.createElement('canvas');
     thumb.className = 'thumb';
@@ -767,14 +771,14 @@ function addLayerAbove(name: string) {
   return l;
 }
 $('btn-layer-add').addEventListener('click', () => {
-  tools.commitFloating();
+  tools.commitTransform();
   tools.selectedShapes.clear();
   withLayersHistory(() => addLayerAbove(`レイヤー ${doc.layers.length + 1}`));
 });
 $('btn-layer-del').addEventListener('click', () => {
   const ids = new Set(selectedLayerIds);
   if (doc.layers.length - ids.size < 1) { setStatus('すべてのレイヤーは削除できません(1 枚は残ります)'); return; }
-  tools.cancel(); tools.commitFloating(); tools.selectedShapes.clear();
+  tools.cancel(); tools.commitTransform(); tools.selectedShapes.clear();
   withLayersHistory(() => {
     const idx = doc.layers.findIndex(l => ids.has(l.id));
     doc.layers = doc.layers.filter(l => !ids.has(l.id));
@@ -784,7 +788,7 @@ $('btn-layer-del').addEventListener('click', () => {
 });
 /** 選択中のレイヤーをまとめて 1 段動かす(上 = 配列の後ろ) */
 const moveLayer = (dir: 1 | -1) => {
-  tools.commitFloating();
+  tools.commitTransform();
   const idxs = doc.layers.map((l, i) => (selectedLayerIds.has(l.id) ? i : -1)).filter(i => i >= 0);
   if (!idxs.length) return;
   if (dir === 1 && Math.max(...idxs) + 1 >= doc.layers.length) return;
@@ -826,7 +830,7 @@ function createTab(d: Doc | null, name: string, notebook: string, section: strin
 /** 現在のタブに、表示状態を書き戻す */
 function stashCurrentTab() {
   if (!cur) return;
-  tools.commitFloating();
+  tools.commitTransform();
   flushAutosave();
   cur.zoom = zoom; cur.panX = panX; cur.panY = panY;
   cur.selectedLayerIds = selectedLayerIds;
@@ -1371,7 +1375,7 @@ $('new-ok').addEventListener('click', async () => {
 });
 
 async function saveProject() {
-  tools.commitFloating();
+  tools.commitTransform();
   const { manifest } = await serialize(doc, 'embed');
   download(new Blob([JSON.stringify(manifest)], { type: 'application/json' }), `${cur.name}.json`);
 }
@@ -1404,12 +1408,12 @@ viewport.addEventListener('drop', async ev => {
   ev.preventDefault();
   for (const f of [...(ev.dataTransfer?.files ?? [])]) await openFile(f);
 });
-$('btn-png').addEventListener('click', () => { tools.commitFloating(); exportPng(doc, cur.name); });
+$('btn-png').addEventListener('click', () => { tools.commitTransform(); exportPng(doc, cur.name); });
 $('btn-psd').addEventListener('click', async () => {
-  tools.commitFloating();
+  tools.commitTransform();
   try { await exportPsd(doc, cur.name); } catch (e) { alert('PSD 書き出しに失敗: ' + (e as Error).message); }
 });
-$('btn-svg').addEventListener('click', () => { tools.commitFloating(); exportSvg(doc, cur.name); });
+$('btn-svg').addEventListener('click', () => { tools.commitTransform(); exportSvg(doc, cur.name); });
 
 // ---------------- ローカル保存(IndexedDB) ----------------
 const LEGACY_AUTOSAVE_KEY = 'oekaki.autosave';
@@ -1454,7 +1458,7 @@ function saveTabIndex() {
 async function saveTab(tab: Tab) {
   if (!tab.doc) return;
   try {
-    const { manifest } = await serialize(tab.doc, 'embed');
+    const { manifest } = await serialize(tab === cur ? tools.docForSave() : tab.doc, 'embed');
     await dbPut(tabKey(tab.id), { name: tab.name, manifest });
     await thumbDataUrl(tab);
     saveTabIndex();
@@ -1636,7 +1640,7 @@ async function push(tab: Tab, force = false, manual = false) {
   if (s.busy) { if (manual) setStatus('同期の処理中です。少し待ってからもう一度押してください'); return; }
   if (tab === cur && tools.busy) { if (manual) tools.cancel(); else return; }
   s.busy = true;
-  if (tab === cur) { tools.commitFloating(); setStatus(`「${tab.name}」を送信中…`); setSyncButtons('sending'); }
+  if (tab === cur) { tools.commitTransform(); setStatus(`「${tab.name}」を送信中…`); setSyncButtons('sending'); }
   try {
     const editStamp = s.lastEdit; // 送信中に描いた分は「未送信」のまま残す
     const { manifest, files } = await serialize(tab.doc, 'files');

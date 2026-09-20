@@ -19,7 +19,7 @@ export const ICONS: Record<ToolId, string> = {
   rect: wrap('<rect x="3" y="5" width="18" height="14" rx="1"/>'),
   ellipse: wrap('<ellipse cx="12" cy="12" rx="9" ry="7.5"/>'),
   rotate: wrap('<path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/>'),
-  scale: wrap('<path d="M21 3 9 15"/><path d="M12 3H3v18h18v-9"/><path d="M16 3h5v5"/>'),
+  transform: wrap('<rect x="5" y="5" width="14" height="14" stroke-dasharray="3 2"/><rect x="2.5" y="2.5" width="5" height="5" fill="currentColor" stroke="none"/><rect x="16.5" y="2.5" width="5" height="5" fill="currentColor" stroke="none"/><rect x="2.5" y="16.5" width="5" height="5" fill="currentColor" stroke="none"/><rect x="16.5" y="16.5" width="5" height="5" fill="currentColor" stroke="none"/>'),
   hand: wrap('<path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>'),
   zoom: wrap('<circle cx="11" cy="11" r="7.5"/><line x1="21" y1="21" x2="16.5" y2="16.5"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>'),
 };

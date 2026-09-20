@@ -5,7 +5,7 @@ import { History, snap, restore, type Snap } from './history';
 import { floodFill, normalizeRect, selectionBounds, selectionMask, selectionPath } from './raster';
 import {
   anchor, ellipseAnchors, hitShape, pointInPolygon, pointInRect, rectAnchors,
-  shapeBounds, simplify, smoothAnchors, transformShape, unionRect,
+  shapeBounds, simplify, smoothAnchors, transformShape, unionRect, type Rect,
 } from './vector';
 
 export interface AppCtx {
@@ -23,17 +23,47 @@ export interface AppCtx {
 }
 
 /** レイヤーの中身を変えるツール(ロック中は使えない) */
-const EDIT_TOOLS = new Set<ToolId>(['move', 'rotate', 'scale', 'pen', 'eraser', 'bucket', 'line', 'rect', 'ellipse']);
+const EDIT_TOOLS = new Set<ToolId>(['move', 'rotate', 'transform', 'pen', 'eraser', 'bucket', 'line', 'rect', 'ellipse']);
 
-/** ビットマップの浮動選択(移動・回転・拡縮中のピクセル) */
-export interface Floating {
+/**
+ * 変形パラメータ。元の位置 (cx, cy) を基準に、拡大縮小 → 回転 → 平行移動 の順に適用する。
+ * 行列にすると translate(cx+tx, cy+ty) · rotate(angle) · scale(sx, sy) · translate(-cx, -cy)
+ */
+export interface XParams { cx: number; cy: number; tx: number; ty: number; angle: number; sx: number; sy: number; }
+const xfPoint = (x: XParams, p: Pt): Pt => {
+  const dx = (p.x - x.cx) * x.sx, dy = (p.y - x.cy) * x.sy;
+  const cos = Math.cos(x.angle), sin = Math.sin(x.angle);
+  return { x: dx * cos - dy * sin + x.cx + x.tx, y: dx * sin + dy * cos + x.cy + x.ty };
+};
+const xfInverse = (x: XParams, p: Pt): Pt => {
+  const wx = p.x - x.cx - x.tx, wy = p.y - x.cy - x.ty;
+  const cos = Math.cos(x.angle), sin = Math.sin(x.angle);
+  const lx = wx * cos + wy * sin, ly = -wx * sin + wy * cos;
+  return { x: lx / (x.sx || 1e-6) + x.cx, y: ly / (x.sy || 1e-6) + x.cy };
+};
+const xfApply = (ctx: CanvasRenderingContext2D, x: XParams) => {
+  ctx.translate(x.cx + x.tx, x.cy + x.ty);
+  ctx.rotate(x.angle);
+  ctx.scale(x.sx, x.sy);
+  ctx.translate(-x.cx, -x.cy);
+};
+
+/** ビットマップの浮動選択(移動・回転・変形中のピクセル) */
+export interface Floating extends XParams {
   canvas: HTMLCanvasElement;
-  tx: number; ty: number; angle: number; scale: number;
-  cx: number; cy: number;
+  /** 変形前の範囲(ドキュメント座標)。バウンディングボックスの元 */
+  bounds: Rect;
   before: Snap;
   layerId: string;
   /** 選択なしでレイヤー全体を対象にした場合 true(確定後に選択を消す) */
   implicit: boolean;
+}
+/** ベジェの変形セッション(選択図形を元の形から変形し続ける) */
+interface VectorXf extends XParams {
+  layerId: string;
+  base: Map<string, Shape>;
+  bounds: Rect;
+  before: Snap;
 }
 
 export interface ToolState { selection: Selection | null; selectedShapes: Set<string>; }
@@ -42,9 +72,17 @@ export type Clip =
   | { kind: 'bitmap'; canvas: HTMLCanvasElement; x: number; y: number }
   | { kind: 'vector'; shapes: Shape[]; layerId: string };
 
-type XformMode = 'move' | 'rotate' | 'scale';
+type XformMode = 'move' | 'rotate';
 type ShapeKind = 'line' | 'rect' | 'ellipse';
-const isXform = (t: ToolId): t is XformMode => t === 'move' || t === 'rotate' || t === 'scale';
+const isXform = (t: ToolId) => t === 'move' || t === 'rotate' || t === 'transform';
+/** バウンディングボックスのハンドル。hx, hy は -1 / 0 / 1(0,0 は使わない) */
+interface Handle { hx: number; hy: number; }
+const HANDLES: Handle[] = [
+  { hx: -1, hy: -1 }, { hx: 0, hy: -1 }, { hx: 1, hy: -1 },
+  { hx: -1, hy: 0 }, { hx: 1, hy: 0 },
+  { hx: -1, hy: 1 }, { hx: 0, hy: 1 }, { hx: 1, hy: 1 },
+];
+const handleLocal = (b: Rect, h: Handle): Pt => ({ x: b.x + ((h.hx + 1) / 2) * b.w, y: b.y + ((h.hy + 1) / 2) * b.h });
 
 type Op =
   | { t: 'marquee'; start: Pt; cur: Pt; shift: boolean }
@@ -54,8 +92,9 @@ type Op =
   | { t: 'vpen'; pts: Pt[] }
   | { t: 'verase'; before: Snap; changed: boolean }
   | { t: 'shape'; kind: ShapeKind; start: Pt; cur: Pt; shift: boolean }
-  | { t: 'xform'; mode: XformMode; start: Pt; base: { tx: number; ty: number; angle: number; scale: number } }
-  | { t: 'vxform'; mode: XformMode; start: Pt; base: Map<string, Shape>; center: Pt; before: Snap; moved: boolean };
+  | { t: 'xform'; mode: XformMode; start: Pt; base: XParams }
+  | { t: 'vxform'; mode: XformMode; start: Pt; base: Map<string, Shape>; center: Pt; before: Snap; moved: boolean }
+  | { t: 'box'; mode: 'move' | 'rotate' | 'scale'; handle: Handle; anchor: Pt; start: Pt; base: XParams };
 
 const dist = (a: Pt, b: Pt) => Math.hypot(b.x - a.x, b.y - a.y);
 
@@ -64,6 +103,7 @@ export class Tools {
   selection: Selection | null = null;
   selectedShapes = new Set<string>();
   floating: Floating | null = null;
+  private vxf: VectorXf | null = null;
   private op: Op | null = null;
 
   constructor(private app: AppCtx) {}
@@ -71,11 +111,14 @@ export class Tools {
   get doc() { return this.app.doc; }
   get active(): Layer { return activeLayer(this.doc); }
   get busy() { return this.op !== null; }
+  /** 自由変形の枠が出ているか */
+  get transforming() { return this.floating !== null || this.vxf !== null; }
 
   setTool(t: ToolId) {
     if (this.op) this.cancel();
-    if (this.floating && !isXform(t)) this.commitFloating();
+    if (!isXform(t)) this.commitTransform();
     this.tool = t;
+    if (t === 'transform') this.beginTransform();
     this.app.render();
   }
 
@@ -85,6 +128,7 @@ export class Tools {
     this.selection = null;
     this.selectedShapes.clear();
     this.floating = null;
+    this.vxf = null;
   }
 
   /** タブ切り替え用: 選択状態を取り出す(浮動選択は先に確定しておくこと) */
@@ -94,15 +138,23 @@ export class Tools {
   setState(s: ToolState | null) {
     this.op = null;
     this.floating = null;
+    this.vxf = null;
     this.selection = s?.selection ?? null;
     this.selectedShapes = s ? new Set(s.selectedShapes) : new Set();
   }
 
   deselect() {
-    this.commitFloating();
+    this.commitTransform();
     this.selection = null;
     this.selectedShapes.clear();
     this.app.render();
+  }
+
+  /** Esc: 操作中なら中止、変形中なら元に戻す、それ以外は選択解除 */
+  escape() {
+    if (this.op) { this.cancel(); return; }
+    if (this.transforming) { this.cancelTransform(); return; }
+    this.deselect();
   }
 
   /** 進行中の操作を破棄 */
@@ -113,7 +165,15 @@ export class Tools {
     const layer = this.active;
     if (op.t === 'erase' || op.t === 'verase' || op.t === 'vxform') restore(layer, op.before);
     if (op.t === 'xform' && this.floating) Object.assign(this.floating, op.base);
+    if (op.t === 'box') { this.setParams(op.base); }
     this.app.render();
+  }
+
+  /** ロック中のレイヤーなら知らせて true */
+  private lockedNotice(layer: Layer): boolean {
+    if (!layer.locked) return false;
+    this.app.notify(`レイヤー「${layer.name}」はロックされています(レイヤーパネルの 🔒 で解除)`);
+    return true;
   }
 
   /** アプリ内クリップボード */
@@ -121,7 +181,7 @@ export class Tools {
 
   /** 選択範囲(なければレイヤー全体)をクリップボードへ。コピーできたら true */
   copy(): boolean {
-    this.commitFloating();
+    this.commitTransform();
     const layer = this.active;
     const { width: w, height: h } = this.doc;
     if (layer.kind === 'vector') {
@@ -165,6 +225,7 @@ export class Tools {
     const { width: w, height: h } = this.doc;
     if (this.lockedNotice(layer)) return;
     if (layer.kind === 'vector') {
+      if (this.vxf) this.cancelTransform();
       if (!this.selectedShapes.size) return;
       const before = snap(layer);
       layer.shapes = layer.shapes.filter(s => !this.selectedShapes.has(s.id));
@@ -188,7 +249,7 @@ export class Tools {
     this.app.render();
   }
 
-  // ---------- 浮動選択(ビットマップの変形) ----------
+  // ---------- 変形(浮動選択 / ベジェの変形セッション) ----------
 
   private ensureFloating() {
     if (this.floating) return;
@@ -206,20 +267,95 @@ export class Tools {
     const lc = ctx2d(layer.canvas);
     lc.save(); lc.clip(path); lc.clearRect(0, 0, w, h); lc.restore();
     this.selection = sel;
-    this.floating = { canvas: fc, tx: 0, ty: 0, angle: 0, scale: 1, cx: b.x + b.w / 2, cy: b.y + b.h / 2, before, layerId: layer.id, implicit };
+    this.floating = { canvas: fc, bounds: b, cx: b.x + b.w / 2, cy: b.y + b.h / 2, tx: 0, ty: 0, angle: 0, sx: 1, sy: 1, before, layerId: layer.id, implicit };
   }
 
-  private applyFloating(f: Floating, p: Pt): Pt {
-    const dx = (p.x - f.cx) * f.scale, dy = (p.y - f.cy) * f.scale;
-    const cos = Math.cos(f.angle), sin = Math.sin(f.angle);
-    return { x: dx * cos - dy * sin + f.cx + f.tx, y: dx * sin + dy * cos + f.cy + f.ty };
+  /** ベジェ: 選択図形の変形セッションを始める */
+  private ensureVectorXf(): boolean {
+    if (this.vxf) return true;
+    const layer = this.active;
+    if (layer.kind !== 'vector' || !this.selectedShapes.size) return false;
+    const base = new Map<string, Shape>();
+    const rects: Rect[] = [];
+    for (const s of layer.shapes) if (this.selectedShapes.has(s.id)) { base.set(s.id, structuredClone(s)); rects.push(shapeBounds(s)); }
+    const b = unionRect(rects);
+    this.vxf = { layerId: layer.id, base, bounds: b, cx: b.x + b.w / 2, cy: b.y + b.h / 2, tx: 0, ty: 0, angle: 0, sx: 1, sy: 1, before: snap(layer) };
+    return true;
   }
 
-  private floatingTransform(ctx: CanvasRenderingContext2D, f: Floating) {
-    ctx.translate(f.cx + f.tx, f.cy + f.ty);
-    ctx.rotate(f.angle);
-    ctx.scale(f.scale, f.scale);
-    ctx.translate(-f.cx, -f.cy);
+  /** 自由変形ツール選択時: 枠を出す(ベジェで未選択なら、図形をクリックしたときに出す) */
+  private beginTransform() {
+    const layer = this.active;
+    if (this.lockedNotice(layer)) return;
+    if (layer.kind === 'bitmap') this.ensureFloating();
+    else this.ensureVectorXf();
+  }
+
+  /** 現在の枠(変形パラメータと元の範囲) */
+  private box(): (XParams & { bounds: Rect }) | null {
+    return this.floating ?? this.vxf;
+  }
+  private setParams(p: XParams) {
+    const b = this.box();
+    if (!b) return;
+    b.tx = p.tx; b.ty = p.ty; b.angle = p.angle; b.sx = p.sx; b.sy = p.sy;
+    if (this.vxf) this.applyVectorXf();
+  }
+  private applyVectorXf() {
+    const v = this.vxf;
+    const layer = this.active;
+    if (!v || layer.kind !== 'vector') return;
+    layer.shapes = layer.shapes.map(s => (v.base.has(s.id) ? transformShape(v.base.get(s.id)!, pt => xfPoint(v, pt)) : s));
+  }
+
+  /**
+   * 保存用のドキュメント。変形途中(浮動選択あり)なら、浮動部分を描き込んだコピーを返す。
+   * 途中で再読み込みされても、切り抜かれた穴だけが保存されないようにするため。
+   */
+  docForSave(): Doc {
+    const f = this.floating;
+    if (!f) return this.doc;
+    const layers = this.doc.layers.map(l => {
+      if (l.id !== f.layerId || l.kind !== 'bitmap') return l;
+      const c = makeCanvas(l.canvas.width, l.canvas.height);
+      const cx = ctx2d(c);
+      cx.drawImage(l.canvas, 0, 0);
+      cx.save(); xfApply(cx, f); cx.drawImage(f.canvas, 0, 0); cx.restore();
+      return { ...l, canvas: c };
+    });
+    return { ...this.doc, layers };
+  }
+
+  /** 変形を確定する(ビットマップの浮動選択とベジェの両方) */
+  commitTransform() {
+    this.commitFloating();
+    const v = this.vxf;
+    if (v) {
+      this.vxf = null;
+      const layer = this.doc.layers.find(l => l.id === v.layerId);
+      if (layer) {
+        const changed = v.tx || v.ty || v.angle || v.sx !== 1 || v.sy !== 1;
+        if (changed) { this.app.history.push(layer.id, v.before, snap(layer)); this.app.dirty(); }
+      }
+      this.app.render();
+    }
+  }
+  /** 変形をやめて元に戻す */
+  cancelTransform() {
+    const f = this.floating;
+    if (f) {
+      this.floating = null;
+      const layer = this.doc.layers.find(l => l.id === f.layerId);
+      if (layer) restore(layer, f.before);
+      if (f.implicit) this.selection = null;
+    }
+    const v = this.vxf;
+    if (v) {
+      this.vxf = null;
+      const layer = this.doc.layers.find(l => l.id === v.layerId);
+      if (layer) restore(layer, v.before);
+    }
+    this.app.render();
   }
 
   commitFloating() {
@@ -230,7 +366,7 @@ export class Tools {
     if (layer?.kind === 'bitmap') {
       const c = ctx2d(layer.canvas);
       c.save();
-      this.floatingTransform(c, f);
+      xfApply(c, f);
       c.drawImage(f.canvas, 0, 0);
       c.restore();
       this.app.history.push(layer.id, f.before, snap(layer));
@@ -243,20 +379,42 @@ export class Tools {
         const b = selectionBounds(sel);
         pts = [{ x: b.x, y: b.y }, { x: b.x + b.w, y: b.y }, { x: b.x + b.w, y: b.y + b.h }, { x: b.x, y: b.y + b.h }];
       } else pts = sel.points;
-      this.selection = { kind: 'lasso', points: pts.map(p => this.applyFloating(f, p)) };
+      this.selection = { kind: 'lasso', points: pts.map(p => xfPoint(f, p)) };
     }
     this.app.dirty();
     this.app.render();
   }
 
-  // ---------- 入力 ----------
-
-  /** ロック中のレイヤーなら知らせて true */
-  private lockedNotice(layer: Layer): boolean {
-    if (!layer.locked) return false;
-    this.app.notify(`レイヤー「${layer.name}」はロックされています(レイヤーパネルの 🔒 で解除)`);
-    return true;
+  /** 枠のどこを押したか判定する */
+  private hitBox(p: Pt): { mode: 'move' | 'rotate' | 'scale'; handle: Handle } | null {
+    const b = this.box();
+    if (!b) return null;
+    const tol = 12 / this.app.zoom;
+    let best: Handle | null = null, bestD = tol;
+    for (const h of HANDLES) {
+      const d = dist(xfPoint(b, handleLocal(b.bounds, h)), p);
+      if (d < bestD) { bestD = d; best = h; }
+    }
+    if (best) return { mode: 'scale', handle: best };
+    const lp = xfInverse(b, p);
+    const inside = lp.x >= b.bounds.x && lp.x <= b.bounds.x + b.bounds.w && lp.y >= b.bounds.y && lp.y <= b.bounds.y + b.bounds.h;
+    return { mode: inside ? 'move' : 'rotate', handle: { hx: 0, hy: 0 } };
   }
+
+  /** 自由変形中にポインタが乗っている場所に応じたカーソル */
+  hoverCursor(p: Pt): string {
+    if (this.tool !== 'transform' || !this.box()) return 'default';
+    const h = this.hitBox(p);
+    if (!h) return 'default';
+    if (h.mode === 'move') return 'move';
+    if (h.mode === 'rotate') return 'grab';
+    const { hx, hy } = h.handle;
+    if (hx === 0) return 'ns-resize';
+    if (hy === 0) return 'ew-resize';
+    return hx * hy > 0 ? 'nwse-resize' : 'nesw-resize';
+  }
+
+  // ---------- 入力 ----------
 
   down(p: Pt, info: InputInfo) {
     const layer = this.active;
@@ -266,10 +424,34 @@ export class Tools {
       return;
     }
     if (EDIT_TOOLS.has(this.tool) && this.lockedNotice(layer)) return;
-    if (this.floating && !isXform(this.tool)) this.commitFloating();
+    if (this.tool === 'transform') { this.downTransform(layer, p, info); this.app.render(); return; }
+    if (this.transforming && !isXform(this.tool)) this.commitTransform();
     if (layer.kind === 'bitmap') this.downBitmap(layer, p, info);
     else this.downVector(layer, p, info);
     this.app.render();
+  }
+
+  private downTransform(layer: Layer, p: Pt, info: InputInfo) {
+    if (!this.box()) {
+      if (layer.kind === 'bitmap') this.ensureFloating();
+      else {
+        // 未選択なら押した図形を選んで枠を出す
+        const hit = this.hitAt(layer, p);
+        if (!hit) return;
+        if (!info.shift) this.selectedShapes.clear();
+        this.selectedShapes.add(hit.id);
+        this.ensureVectorXf();
+      }
+      if (!this.box()) return;
+    }
+    const b = this.box()!;
+    const hit = this.hitBox(p)!;
+    const base: XParams = { cx: b.cx, cy: b.cy, tx: b.tx, ty: b.ty, angle: b.angle, sx: b.sx, sy: b.sy };
+    let anchorPt: Pt = { x: b.cx, y: b.cy };
+    if (hit.mode === 'scale') {
+      anchorPt = info.alt ? { x: b.cx, y: b.cy } : handleLocal(b.bounds, { hx: -hit.handle.hx, hy: -hit.handle.hy });
+    }
+    this.op = { t: 'box', mode: hit.mode, handle: hit.handle, anchor: anchorPt, start: p, base };
   }
 
   private downBitmap(layer: BitmapLayer, p: Pt, info: InputInfo) {
@@ -277,10 +459,10 @@ export class Tools {
     switch (this.tool) {
       case 'select': this.op = { t: 'marquee', start: p, cur: p, shift: info.shift }; break;
       case 'lasso': this.op = { t: 'lasso', pts: [p], shift: info.shift }; break;
-      case 'move': case 'rotate': case 'scale': {
+      case 'move': case 'rotate': {
         this.ensureFloating();
         const f = this.floating!;
-        this.op = { t: 'xform', mode: this.tool, start: p, base: { tx: f.tx, ty: f.ty, angle: f.angle, scale: f.scale } };
+        this.op = { t: 'xform', mode: this.tool, start: p, base: { cx: f.cx, cy: f.cy, tx: f.tx, ty: f.ty, angle: f.angle, sx: f.sx, sy: f.sy } };
         break;
       }
       case 'pen': {
@@ -326,7 +508,7 @@ export class Tools {
         break;
       }
       case 'lasso': this.op = { t: 'lasso', pts: [p], shift: info.shift }; break;
-      case 'move': case 'rotate': case 'scale': {
+      case 'move': case 'rotate': {
         if (!this.selectedShapes.size) {
           const hit = this.hitAt(layer, p);
           if (!hit) break;
@@ -400,10 +582,8 @@ export class Tools {
         if (op.mode === 'move') {
           f.tx = op.base.tx + (p.x - op.start.x);
           f.ty = op.base.ty + (p.y - op.start.y);
-        } else if (op.mode === 'rotate') {
-          f.angle = op.base.angle + Math.atan2(p.y - c.y, p.x - c.x) - Math.atan2(op.start.y - c.y, op.start.x - c.x);
         } else {
-          f.scale = Math.max(0.01, op.base.scale * dist(p, c) / Math.max(1, dist(op.start, c)));
+          f.angle = op.base.angle + Math.atan2(p.y - c.y, p.x - c.x) - Math.atan2(op.start.y - c.y, op.start.x - c.x);
         }
         break;
       }
@@ -414,8 +594,50 @@ export class Tools {
         op.moved = true;
         break;
       }
+      case 'box': this.moveBox(op, p, info); break;
     }
     this.app.render();
+  }
+
+  /** バウンディングボックスのドラッグ(移動 / 回転 / 拡大縮小) */
+  private moveBox(op: Extract<Op, { t: 'box' }>, p: Pt, info: InputInfo) {
+    const b = this.box();
+    if (!b) return;
+    const base = op.base;
+    const next: XParams = { ...base };
+    if (op.mode === 'move') {
+      next.tx = base.tx + (p.x - op.start.x);
+      next.ty = base.ty + (p.y - op.start.y);
+    } else if (op.mode === 'rotate') {
+      const c = { x: base.cx + base.tx, y: base.cy + base.ty };
+      let a = base.angle + Math.atan2(p.y - c.y, p.x - c.x) - Math.atan2(op.start.y - c.y, op.start.x - c.x);
+      if (info.shift) { const step = Math.PI / 12; a = Math.round(a / step) * step; } // 15° 刻み
+      next.angle = a;
+    } else {
+      // 拡大縮小: 元の座標系(回転・拡大前)で、アンカーからの距離の比で倍率を決める
+      const hl = handleLocal(b.bounds, op.handle);
+      const a = op.anchor;
+      const lp = xfInverse(base, p);
+      const { hx, hy } = op.handle;
+      const corner = hx !== 0 && hy !== 0;
+      const proportional = corner && !info.shift; // Photoshop と同じく角は既定で縦横比を保つ
+      const clamp = (v: number) => (Math.abs(v) < 0.01 ? (v < 0 ? -0.01 : 0.01) : v);
+      if (proportional) {
+        const dx = hl.x - a.x, dy = hl.y - a.y;
+        const t = ((lp.x - a.x) * dx + (lp.y - a.y) * dy) / (dx * dx + dy * dy || 1);
+        next.sx = clamp(base.sx * t);
+        next.sy = clamp(base.sy * t);
+      } else {
+        if (hx !== 0) next.sx = clamp(base.sx * (lp.x - a.x) / (hl.x - a.x || 1e-6));
+        if (hy !== 0) next.sy = clamp(base.sy * (lp.y - a.y) / (hl.y - a.y || 1e-6));
+      }
+      // アンカー(反対側の角 / 辺 / 中心)が動かないように平行移動を補正する
+      const before = xfPoint(base, a);
+      const after = xfPoint({ ...next, tx: base.tx, ty: base.ty }, a);
+      next.tx = base.tx + before.x - after.x;
+      next.ty = base.ty + before.y - after.y;
+    }
+    this.setParams(next);
   }
 
   up(p: Pt, info: InputInfo) {
@@ -423,7 +645,6 @@ export class Tools {
     if (!op) return;
     this.op = null;
     const layer = this.active;
-    const { width: w, height: h } = this.doc;
     switch (op.t) {
       case 'marquee': {
         const r = normalizeRect(op.start, p);
@@ -498,7 +719,8 @@ export class Tools {
         this.app.dirty();
         break;
       }
-      case 'xform': break; // 浮動選択は Enter / ツール変更で確定
+      case 'xform': break;   // 浮動選択は Enter / ツール変更で確定
+      case 'box': break;     // 同上
       case 'vxform':
         if (op.moved) {
           this.app.history.push(layer.id, op.before, snap(layer));
@@ -506,7 +728,7 @@ export class Tools {
         }
         break;
     }
-    void w; void h;
+    void info;
     this.app.render();
   }
 
@@ -615,13 +837,9 @@ export class Tools {
       const dx = cur.x - start.x, dy = cur.y - start.y;
       return p => ({ x: p.x + dx, y: p.y + dy });
     }
-    if (mode === 'rotate') {
-      const a = Math.atan2(cur.y - c.y, cur.x - c.x) - Math.atan2(start.y - c.y, start.x - c.x);
-      const cos = Math.cos(a), sin = Math.sin(a);
-      return p => ({ x: (p.x - c.x) * cos - (p.y - c.y) * sin + c.x, y: (p.x - c.x) * sin + (p.y - c.y) * cos + c.y });
-    }
-    const s = Math.max(0.01, dist(cur, c) / Math.max(1, dist(start, c)));
-    return p => ({ x: c.x + (p.x - c.x) * s, y: c.y + (p.y - c.y) * s });
+    const a = Math.atan2(cur.y - c.y, cur.x - c.x) - Math.atan2(start.y - c.y, start.x - c.x);
+    const cos = Math.cos(a), sin = Math.sin(a);
+    return p => ({ x: (p.x - c.x) * cos - (p.y - c.y) * sin + c.x, y: (p.x - c.x) * sin + (p.y - c.y) * cos + c.y });
   }
 
   private buildShape(op: Extract<Op, { t: 'shape' }>): Shape | null {
@@ -658,7 +876,7 @@ export class Tools {
     ctx.globalAlpha = layer.opacity;
     if (this.floating) {
       ctx.save();
-      this.floatingTransform(ctx, this.floating);
+      xfApply(ctx, this.floating);
       ctx.drawImage(this.floating.canvas, 0, 0);
       ctx.restore();
     }
@@ -713,12 +931,12 @@ export class Tools {
       const path = selectionPath(this.selection);
       if (this.floating) {
         ctx.save();
-        this.floatingTransform(ctx, this.floating);
-        this.ants(ctx, path, lw / this.floating.scale);
+        xfApply(ctx, this.floating);
+        this.ants(ctx, path, lw / Math.max(0.01, Math.min(Math.abs(this.floating.sx), Math.abs(this.floating.sy))));
         ctx.restore();
       } else this.ants(ctx, path, lw);
     }
-    if (layer.kind === 'vector' && this.selectedShapes.size) {
+    if (layer.kind === 'vector' && this.selectedShapes.size && !this.vxf) {
       ctx.strokeStyle = '#f5c542';
       ctx.setLineDash([4 * lw, 3 * lw]);
       for (const s of layer.shapes) {
@@ -726,6 +944,32 @@ export class Tools {
         const b = shapeBounds(s);
         ctx.strokeRect(b.x - 2 * lw, b.y - 2 * lw, b.w + 4 * lw, b.h + 4 * lw);
       }
+      ctx.setLineDash([]);
+    }
+    // 自由変形のバウンディングボックス
+    const box = this.tool === 'transform' || this.vxf ? this.box() : null;
+    if (box) {
+      const b = box.bounds;
+      const corners = [{ x: b.x, y: b.y }, { x: b.x + b.w, y: b.y }, { x: b.x + b.w, y: b.y + b.h }, { x: b.x, y: b.y + b.h }].map(p => xfPoint(box, p));
+      ctx.beginPath();
+      corners.forEach((c, i) => (i ? ctx.lineTo(c.x, c.y) : ctx.moveTo(c.x, c.y)));
+      ctx.closePath();
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 3 * lw; ctx.stroke();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = lw; ctx.stroke();
+      const hs = 8 / zoom;
+      for (const h of HANDLES) {
+        const w = xfPoint(box, handleLocal(b, h));
+        ctx.fillStyle = '#fff';
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = lw;
+        ctx.fillRect(w.x - hs / 2, w.y - hs / 2, hs, hs);
+        ctx.strokeRect(w.x - hs / 2, w.y - hs / 2, hs, hs);
+      }
+      const c = { x: box.cx + box.tx, y: box.cy + box.ty };
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 4 / zoom, 0, Math.PI * 2);
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 2 * lw; ctx.stroke();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = lw; ctx.stroke();
     }
     ctx.restore();
   }
