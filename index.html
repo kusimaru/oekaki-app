@@ -51,7 +51,7 @@
 
   <aside id="toolbar" title="ドラッグで並べ替え"></aside>
 
-  <main id="viewport"><canvas id="view"></canvas></main>
+  <main id="viewport"><canvas id="view"></canvas><div id="sync-banner" hidden></div></main>
 
   <aside id="sidebar">
     <section>
@@ -143,6 +143,7 @@
     <p class="note">タブの名前がリポジトリ内のフォルダ名になります(タブをダブルタップで変更)。同期の操作はタブバー右の「送る / 受け取る」ボタンで行います。</p>
     <p class="note" id="gh-msg"></p>
     <div class="actions">
+      <button id="gh-test">接続テスト</button>
       <button id="gh-close">閉じる</button>
       <button id="gh-save" class="active">設定を保存</button>
     </div>

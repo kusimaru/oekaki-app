@@ -1075,11 +1075,27 @@ function ghFor(tab: Tab): GitHubSync | null {
   g.knownPaths = tab.sync.knownPaths;
   return g;
 }
+let bannerTimer = 0;
 function setStatus(msg: string, cls: '' | 'ok' | 'err' = '') {
   const el = $('sync-status');
   el.textContent = msg;
   el.className = cls;
   $('gh-msg').textContent = msg;
+  // キャンバス上部のバナーにも出す(上部バーは狭くて読めないことがある)。成功は数秒で消し、エラーは残す
+  const banner = $('sync-banner');
+  clearTimeout(bannerTimer);
+  if (!msg) { banner.hidden = true; return; }
+  banner.textContent = msg;
+  banner.className = cls;
+  banner.hidden = false;
+  if (cls !== 'err') bannerTimer = window.setTimeout(() => { banner.hidden = true; }, cls === 'ok' ? 5000 : 8000);
+}
+/** 送る / 受け取るボタンの表示を処理中に合わせる */
+function setSyncButtons(state: 'idle' | 'sending' | 'receiving') {
+  const send = $<HTMLButtonElement>('btn-send'), recv = $<HTMLButtonElement>('btn-receive');
+  send.disabled = recv.disabled = state !== 'idle';
+  send.textContent = state === 'sending' ? '送信中…' : 'この端末の絵を送る';
+  recv.textContent = state === 'receiving' ? '受信中…' : 'GitHub の絵を受け取る';
 }
 function timeAgo(iso: string): string {
   const sec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -1127,12 +1143,14 @@ async function refreshLastInfo(tab: Tab) {
  * この端末の絵で GitHub 側を上書きする。
  * force=false のときは、自分が知らないコミットがあれば ConflictError で止まる(自動送信用)。
  */
-async function push(tab: Tab, force = false) {
+async function push(tab: Tab, force = false, manual = false) {
   const gh = ghFor(tab);
   const s = tab.sync;
-  if (!gh || s.busy || (tab === cur && tools.busy)) return;
+  if (!gh) { if (manual) setStatus('GitHub の設定がありません。右上の「GitHub」から設定してください', 'err'); return; }
+  if (s.busy) { if (manual) setStatus('同期の処理中です。少し待ってからもう一度押してください'); return; }
+  if (tab === cur && tools.busy) { if (manual) tools.cancel(); else return; }
   s.busy = true;
-  if (tab === cur) { tools.commitFloating(); setStatus(`「${tab.name}」を送信中…`); }
+  if (tab === cur) { tools.commitFloating(); setStatus(`「${tab.name}」を送信中…`); setSyncButtons('sending'); }
   try {
     const { manifest, files } = await serialize(tab.doc, 'files');
     const repoFiles = [
@@ -1148,21 +1166,24 @@ async function push(tab: Tab, force = false) {
     s.lastInfo = { device: DEVICE, date: new Date().toISOString() };
     saveTabIndex();
   } catch (e) {
+    console.error('push failed', e);
     if (e instanceof ConflictError) { s.conflict = true; s.remoteChanged = true; await refreshLastInfo(tab); }
     else if (tab === cur) setStatus(`送信に失敗しました: ` + (e as Error).message, 'err');
   } finally {
     s.busy = false;
-    if (tab === cur) updateSyncStatus();
+    if (tab === cur) { setSyncButtons('idle'); if (!s.conflict && !$('sync-banner').classList.contains('err')) setStatus(`「${tab.name}」を送りました`, 'ok'); updateSyncStatus(); }
     renderTabs();
   }
 }
 /** GitHub の絵でこのタブを上書きする */
-async function pull(tab: Tab) {
+async function pull(tab: Tab, manual = false) {
   const gh = ghFor(tab);
   const s = tab.sync;
-  if (!gh || s.busy || (tab === cur && tools.busy)) return;
+  if (!gh) { if (manual) setStatus('GitHub の設定がありません。右上の「GitHub」から設定してください', 'err'); return; }
+  if (s.busy) { if (manual) setStatus('同期の処理中です。少し待ってからもう一度押してください'); return; }
+  if (tab === cur && tools.busy) { if (manual) tools.cancel(); else return; }
   s.busy = true;
-  if (tab === cur) setStatus(`「${tab.name}」を受信中…`);
+  if (tab === cur) { setStatus(`「${tab.name}」を受信中…`); setSyncButtons('receiving'); }
   try {
     const { sha, files } = await gh.pull();
     s.knownPaths = gh.knownPaths;
@@ -1183,12 +1204,13 @@ async function pull(tab: Tab) {
     s.remoteChanged = false;
     await refreshLastInfo(tab);
     saveTabIndex();
-    if (tab === cur) setStatus(pj ? `「${tab.name}」を受け取りました` : `GitHub に「${tab.name}」はまだありません`, pj ? 'ok' : '');
+    if (tab === cur) setStatus(pj ? `「${tab.name}」を受け取りました` : `GitHub に「${tab.name}」という名前の絵はまだありません`, pj ? 'ok' : 'err');
   } catch (e) {
+    console.error('pull failed', e);
     if (tab === cur) setStatus(`受信に失敗しました: ` + (e as Error).message, 'err');
   } finally {
     s.busy = false;
-    if (tab === cur) updateSyncStatus();
+    if (tab === cur) { setSyncButtons('idle'); if (!$('sync-banner').classList.contains('err') && $('sync-banner').hidden) updateSyncStatus(); }
     renderTabs();
   }
 }
@@ -1232,15 +1254,28 @@ setInterval(() => { if (sync.gh) updateSyncStatus(); }, 60_000); // 「n 分前�
 document.addEventListener('visibilitychange', () => { if (!document.hidden) autoSyncTick(); });
 
 $('btn-send').addEventListener('click', async () => {
-  if (!sync.gh) return;
   cur.sync.conflict = false;
-  await push(cur, true);
+  await push(cur, true, true);
 });
 $('btn-receive').addEventListener('click', async () => {
-  if (!sync.gh) return;
   if (cur.sync.dirty && !confirm(`「${cur.name}」でこの端末で描いた分は消え、GitHub の絵に置き換わります。よろしいですか?`)) return;
   cur.sync.conflict = false;
-  await pull(cur);
+  await pull(cur, true);
+});
+$('gh-test').addEventListener('click', async () => {
+  const cfg = readGhForm();
+  const msg = $('gh-msg');
+  if (!cfg.token || !cfg.owner || !cfg.repo) { msg.textContent = 'トークン・オーナー・リポジトリを入力してください'; return; }
+  msg.textContent = '確認中…';
+  const r = await new GitHubSync({ ...cfg, dir: '' }).checkAccess();
+  if (r.ok) {
+    msg.textContent = `接続 OK: ${cfg.owner}/${cfg.repo}(${r.isPrivate ? '非公開' : '公開'})、書き込み ${r.canPush ? '可' : '不可 → トークンの Contents 権限を Read and write にしてください'}`;
+  } else {
+    const hint = r.status === 401 ? 'トークンが間違っているか期限切れです'
+      : r.status === 404 ? 'リポジトリ名かオーナー名が違うか、トークンにこのリポジトリの権限がありません'
+      : r.status === 0 ? 'ネットワークに接続できません' : '';
+    msg.textContent = `接続に失敗(${r.status}): ${hint || r.message}`;
+  }
 });
 
 const dlgGh = $<HTMLDialogElement>('dlg-github');

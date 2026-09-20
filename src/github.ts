@@ -127,6 +127,16 @@ export class GitHubSync {
     return commit.sha as string;
   }
 
+  /** 接続テスト: トークンでリポジトリが見えるか、書き込みできるか */
+  async checkAccess(): Promise<{ ok: true; canPush: boolean; isPrivate: boolean } | { ok: false; status: number; message: string }> {
+    try {
+      const r = await this.api(this.base);
+      return { ok: true, canPush: !!r.permissions?.push, isPrivate: !!r.private };
+    } catch (e: any) {
+      return { ok: false, status: e.status ?? 0, message: e.message ?? String(e) };
+    }
+  }
+
   /** リモートのフォルダに project.json があるか */
   async remoteHasProject(): Promise<boolean> {
     const head = await this.getHead();
