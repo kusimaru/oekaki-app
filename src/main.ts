@@ -538,12 +538,63 @@ function setActiveLayer(id: string) {
   renderLayers();
   requestRender();
 }
+/** レイヤー行の「≡」つまみをドラッグして並べ替える(ペン・指・マウス共通) */
+function attachLayerDrag(handle: HTMLElement, row: HTMLElement, layerId: string) {
+  handle.addEventListener('pointerdown', ev => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    try { handle.setPointerCapture(ev.pointerId); } catch { /* 合成イベントでは失敗する */ }
+    const list = $('layers');
+    const others = () => [...list.querySelectorAll<HTMLElement>('.layer')].filter(r => r !== row);
+    let insertAt = -1; // 他の行(上から順)の何番目の前に入れるか。others.length なら末尾
+    const clearMarks = () => others().forEach(r => r.classList.remove('drop-before', 'drop-after'));
+    const onMove = (e: PointerEvent) => {
+      row.classList.add('dragging');
+      const rows = others();
+      insertAt = rows.length;
+      for (let i = 0; i < rows.length; i++) {
+        const b = rows[i].getBoundingClientRect();
+        if (e.clientY < b.top + b.height / 2) { insertAt = i; break; }
+      }
+      clearMarks();
+      if (insertAt < rows.length) rows[insertAt].classList.add('drop-before');
+      else if (rows.length) rows[rows.length - 1].classList.add('drop-after');
+    };
+    const onUp = () => {
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+      row.classList.remove('dragging');
+      clearMarks();
+      if (insertAt < 0) return;
+      const rows = others();
+      tools.commitFloating();
+      withLayersHistory(() => {
+        const layer = doc.layers.find(l => l.id === layerId)!;
+        const rest = doc.layers.filter(l => l.id !== layerId);
+        // パネルは上が最後尾なので、上から insertAt 番目 = 配列の (rest.length - insertAt) 番目
+        rest.splice(rows.length - insertAt, 0, layer);
+        doc.layers = rest;
+      });
+    };
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  });
+}
+
 function renderLayers() {
   const el = $('layers');
   el.innerHTML = '';
   for (const l of [...doc.layers].reverse()) {
     const row = document.createElement('div');
     row.className = 'layer' + (l.id === doc.activeLayerId ? ' active' : '');
+    const handle = document.createElement('span');
+    handle.className = 'grip';
+    handle.textContent = '≡';
+    handle.title = 'ドラッグで並べ替え';
+    attachLayerDrag(handle, row, l.id);
+    row.appendChild(handle);
     const eye = document.createElement('input');
     eye.type = 'checkbox';
     eye.checked = l.visible;

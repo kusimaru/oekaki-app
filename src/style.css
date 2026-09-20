@@ -56,8 +56,15 @@ input, select { font: inherit; background: #222; color: var(--text); border: 1px
 #layers { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
 .layer { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 6px; background: #2f2f2f; border: 1px solid transparent; cursor: pointer; }
 .layer.active { border-color: var(--accent); background: #3d3a2c; }
+.layer { position: relative; }
+.layer .grip { color: var(--muted); font-size: 16px; line-height: 1; padding: 6px 4px; margin: -6px 0 -6px -4px; cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }
+.layer .grip:active { cursor: grabbing; }
+.layer.dragging { opacity: .4; }
+.layer.drop-before::before, .layer.drop-after::after { content: ""; position: absolute; left: 4px; right: 4px; height: 3px; background: var(--accent); border-radius: 2px; }
+.layer.drop-before::before { top: -3px; }
+.layer.drop-after::after { bottom: -3px; }
 .layer .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.layer input[type=range] { width: 70px; }
+.layer input[type=range] { width: 52px; flex: none; }
 .layer .thumb { width: 32px; height: 24px; background: #fff; border: 1px solid #111; image-rendering: pixelated; flex: none; }
 .layer-buttons { display: flex; gap: 4px; flex-wrap: wrap; }
 .edit-buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
