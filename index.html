@@ -18,7 +18,7 @@
   <header id="topbar">
     <div class="group">
       <button id="btn-new">新規</button>
-      <button id="btn-open" title="プロジェクト(.json)を開く">開く</button>
+      <button id="btn-open" title="プロジェクト(.json)、画像(PNG / JPEG / WebP など)、PSD を開く">開く</button>
       <button id="btn-save" title="プロジェクト(.json)を保存">保存</button>
       <span class="sep"></span>
       <button id="btn-png" title="PNG 書き出し">PNG</button>
@@ -157,7 +157,7 @@
     </div>
   </dialog>
 
-  <input type="file" id="file-open" accept=".json,application/json" hidden>
+  <input type="file" id="file-open" accept=".json,.psd,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.avif,image/*,application/json" multiple hidden>
 </div>
 <script type="module" src="./src/main.ts"></script>
 </body>

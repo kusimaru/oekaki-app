@@ -7,6 +7,7 @@ import { download, exportPng, exportPsd, exportSvg } from './exporters';
 import { PROJECT_FILE, deserialize, serialize, type Manifest } from './project';
 import { ConflictError, GitHubSync, type GhConfig } from './github';
 import { ICONS } from './icons';
+import { IMAGE_EXT, PSD_EXT, importImage, importPsd } from './importers';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -938,17 +939,32 @@ async function saveProject() {
 }
 $('btn-save').addEventListener('click', saveProject);
 $('btn-open').addEventListener('click', () => $<HTMLInputElement>('file-open').click());
-$<HTMLInputElement>('file-open').addEventListener('change', async ev => {
-  const f = (ev.target as HTMLInputElement).files?.[0];
-  if (!f) return;
+/** プロジェクト JSON / 画像 / PSD を新しいタブとして開く */
+async function openFile(f: File) {
+  const name = f.name.replace(/\.[^.]+$/, '') || 'image';
   try {
-    const m = JSON.parse(await f.text()) as Manifest;
-    const tab = addTab(await deserialize(m, async () => null), f.name.replace(/\.json$/i, ''));
+    let d: Doc;
+    if (/\.json$/i.test(f.name)) d = await deserialize(JSON.parse(await f.text()) as Manifest, async () => null);
+    else if (PSD_EXT.test(f.name)) d = await importPsd(f);
+    else if (IMAGE_EXT.test(f.name) || f.type.startsWith('image/')) d = await importImage(f);
+    else throw new Error('対応していないファイル形式です(JSON / PNG / JPEG / WebP / GIF / BMP / SVG / PSD)');
+    const tab = addTab(d, name);
     tab.sync.dirty = true;
     saveTab(tab);
     saveTabIndex();
-  } catch (e) { alert('読み込みに失敗しました: ' + (e as Error).message); }
-  (ev.target as HTMLInputElement).value = '';
+    setStatus(`「${f.name}」を開きました`, 'ok');
+  } catch (e) { alert(`「${f.name}」を読み込めませんでした: ` + (e as Error).message); }
+}
+$<HTMLInputElement>('file-open').addEventListener('change', async ev => {
+  const input = ev.target as HTMLInputElement;
+  for (const f of [...(input.files ?? [])]) await openFile(f);
+  input.value = '';
+});
+// キャンバスへのドラッグ&ドロップでも開ける
+viewport.addEventListener('dragover', ev => { ev.preventDefault(); if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy'; });
+viewport.addEventListener('drop', async ev => {
+  ev.preventDefault();
+  for (const f of [...(ev.dataTransfer?.files ?? [])]) await openFile(f);
 });
 $('btn-png').addEventListener('click', () => { tools.commitFloating(); exportPng(doc, cur.name); });
 $('btn-psd').addEventListener('click', async () => {
