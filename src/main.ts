@@ -1872,6 +1872,10 @@ $('btn-update').addEventListener('click', () => {
 });
 setInterval(checkForUpdate, 10 * 60_000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkForUpdate(); });
+// PC でも「アプリとしてインストール」できるようにサービスワーカーを登録する(公開版のみ)
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(e => console.warn('service worker', e));
+}
 
 // ---------------- 起動 ----------------
 async function boot() {
