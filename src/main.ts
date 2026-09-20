@@ -1064,9 +1064,10 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) flush
 // ---------------- GitHub 同期 ----------------
 const GH_KEY = 'oekaki.github';
 const sync = {
-  cfg: null as (GhConfig & { auto: boolean }) | null,
+  cfg: null as (GhConfig & { auto: boolean; auto2?: boolean }) | null,
   gh: null as GitHubSync | null,
-  auto: true,
+  /** 自動同期(既定はオフ = ボタンを押したときだけ同期) */
+  auto: false,
 };
 /** タブごとのフォルダを向いたクライアントを作る */
 function ghFor(tab: Tab): GitHubSync | null {
@@ -1122,20 +1123,24 @@ function updateSyncStatus() {
   recv.classList.toggle('attention', both);
   const last = s.lastInfo ? ` · 最終更新 ${s.lastInfo.device} ${timeAgo(s.lastInfo.date)}` : '';
   if (s.busy) return;
-  if (both) setStatus(`「${cur.name}」は ${DEVICE === 'iPad' ? 'PC' : 'iPad'} でも変更されています。どちらを残すかボタンで選んでください${last}`, 'err');
-  else if (s.remoteChanged) setStatus(`「${cur.name}」に相手の更新があります(自動で受け取ります)${last}`);
-  else if (s.dirty) setStatus(`「${cur.name}」: 未送信の変更あり` + (sync.auto ? '(まもなく自動で送ります)' : '') + last);
-  else if (s.synced) setStatus(`「${cur.name}」: 送信済み${last}`, 'ok');
-  else setStatus(`「${cur.name}」: GitHub とまだつながっていません(描くと自動で送ります)`);
+  const el = $('sync-status');
+  const show = (msg: string, cls: '' | 'ok' | 'err' = '') => { el.textContent = msg; el.className = cls; $('gh-msg').textContent = msg; };
+  // 手動モードでは状態を右上に出すだけ(バナーはボタン操作の結果にだけ使う)
+  const out = sync.auto ? setStatus : show;
+  if (both) out(`「${cur.name}」は ${DEVICE === 'iPad' ? 'PC' : 'iPad'} でも変更されています。どちらを残すかボタンで選んでください${last}`, 'err');
+  else if (s.remoteChanged) out(`「${cur.name}」: 相手の更新あり(「GitHub の絵を受け取る」で取り込み)${last}`);
+  else if (s.dirty) out(`「${cur.name}」: 未送信の変更あり` + (sync.auto ? '(まもなく自動で送ります)' : '(「この端末の絵を送る」で送信)') + last);
+  else if (s.synced) out(`「${cur.name}」: 送信済み${last}`, 'ok');
+  else out(`「${cur.name}」: GitHub にまだ送っていません` + (sync.auto ? '(描くと自動で送ります)' : '(「この端末の絵を送る」で送信)'));
 }
-function loadGhConfig(): (GhConfig & { auto: boolean }) | null {
+function loadGhConfig(): (GhConfig & { auto: boolean; auto2?: boolean }) | null {
   try { return JSON.parse(localStorage.getItem(GH_KEY) || 'null'); } catch { return null; }
 }
 /** 接続設定を反映する。resetTabs=true なら各タブの同期状態(どのコミットまで受け取ったか)を忘れる */
-function applyGhConfig(cfg: (GhConfig & { auto: boolean }) | null, resetTabs = false) {
+function applyGhConfig(cfg: (GhConfig & { auto: boolean; auto2?: boolean }) | null, resetTabs = false) {
   sync.cfg = cfg;
   sync.gh = cfg && cfg.token && cfg.owner && cfg.repo ? new GitHubSync(cfg) : null;
-  sync.auto = cfg?.auto ?? true;
+  sync.auto = cfg?.auto2 ?? false; // 既定は手動(ボタンを押したときだけ同期)
   if (resetTabs) for (const t of tabs) t.sync = { ...newSyncState(), dirty: t.sync.dirty, lastEdit: t.sync.lastEdit };
   updateSyncStatus();
   renderTabs();
@@ -1159,6 +1164,7 @@ async function push(tab: Tab, force = false, manual = false) {
   s.busy = true;
   if (tab === cur) { tools.commitFloating(); setStatus(`「${tab.name}」を送信中…`); setSyncButtons('sending'); }
   try {
+    const editStamp = s.lastEdit; // 送信中に描いた分は「未送信」のまま残す
     const { manifest, files } = await serialize(tab.doc, 'files');
     const repoFiles = [
       { path: PROJECT_FILE, content: JSON.stringify(manifest) },
@@ -1166,7 +1172,7 @@ async function push(tab: Tab, force = false, manual = false) {
     ];
     s.lastSha = await gh.commitFiles(repoFiles, `update ${tab.name} from ${DEVICE} ${new Date().toISOString()}`, { expectedHead: force ? undefined : s.lastSha, force });
     s.knownPaths = gh.knownPaths;
-    s.dirty = false;
+    if (s.lastEdit === editStamp) s.dirty = false;
     s.synced = true;
     s.conflict = false;
     s.remoteChanged = false;
@@ -1228,7 +1234,8 @@ async function pull(tab: Tab, manual = false) {
  *  - まだつながっていないタブは、GitHub に同名の絵がなければ送り、あれば「両方に変更あり」にする
  */
 async function autoSyncTick() {
-  if (!sync.gh || !sync.auto || !navigator.onLine) return;
+  if (!sync.gh || !navigator.onLine) return;
+  if (!sync.auto) { await checkRemoteTick(); return; }
   for (const tab of [...tabs]) {
     const s = tab.sync;
     if (s.busy || s.conflict || (tab === cur && tools.busy)) continue;
@@ -1255,6 +1262,30 @@ async function autoSyncTick() {
     if (tab === cur) updateSyncStatus();
     renderTabs();
   }
+}
+/**
+ * 手動モード: 絵は動かさず、相手の更新があるかだけを 30 秒ごとに確認して印を出す。
+ * 例外として、まだ何も描いていない新しいタブは、GitHub に同名の絵があれば受け取る(何も失われないため)。
+ */
+async function checkRemoteTick() {
+  for (const tab of [...tabs]) {
+    const s = tab.sync;
+    if (s.busy || Date.now() - s.checkedAt < 30_000) continue;
+    s.checkedAt = Date.now();
+    try {
+      const gh = ghFor(tab)!;
+      if (!s.synced) {
+        if (!s.dirty && await gh.remoteHasProject()) await pull(tab);
+        continue;
+      }
+      const head = await gh.getHead();
+      const changed = head !== s.lastSha;
+      if (changed && !s.remoteChanged) await refreshLastInfo(tab);
+      s.remoteChanged = changed;
+    } catch { /* 次回に再試行 */ }
+  }
+  updateSyncStatus();
+  renderTabs();
 }
 setInterval(autoSyncTick, 10_000);
 setInterval(() => { if (sync.gh) updateSyncStatus(); }, 60_000); // 「n 分前」の表示更新
@@ -1292,18 +1323,20 @@ $('btn-github').addEventListener('click', () => {
   $<HTMLInputElement>('gh-owner').value = cfg?.owner ?? '';
   $<HTMLInputElement>('gh-repo').value = cfg?.repo ?? '';
   $<HTMLInputElement>('gh-branch').value = cfg?.branch ?? 'main';
-  $<HTMLInputElement>('gh-auto').checked = cfg?.auto ?? true;
+  $<HTMLInputElement>('gh-auto').checked = cfg?.auto2 ?? false;
   updateSyncStatus();
   dlgGh.showModal();
 });
-function readGhForm(): GhConfig & { auto: boolean } {
+function readGhForm(): GhConfig & { auto: boolean; auto2: boolean } {
+  const auto = $<HTMLInputElement>('gh-auto').checked;
   return {
     token: $<HTMLInputElement>('gh-token').value.trim(),
     owner: $<HTMLInputElement>('gh-owner').value.trim(),
     repo: $<HTMLInputElement>('gh-repo').value.trim(),
     branch: $<HTMLInputElement>('gh-branch').value.trim() || 'main',
     dir: '',
-    auto: $<HTMLInputElement>('gh-auto').checked,
+    auto,
+    auto2: auto,
   };
 }
 /** 設定フォームを保存する。接続先が変わったときだけ同期状態をリセットする */
@@ -1313,15 +1346,20 @@ function saveGhForm() {
   const changed = !prev || prev.token !== cfg.token || prev.owner !== cfg.owner || prev.repo !== cfg.repo || prev.branch !== cfg.branch;
   localStorage.setItem(GH_KEY, JSON.stringify(cfg));
   if (changed) { applyGhConfig(cfg, true); bootSync(); }
-  else { sync.cfg = cfg; sync.auto = cfg.auto; }
+  else { sync.cfg = cfg; sync.auto = cfg.auto2; }
   updateSyncStatus();
 }
 $('gh-save').addEventListener('click', () => { saveGhForm(); dlgGh.close(); });
 $('gh-close').addEventListener('click', () => dlgGh.close());
 
-/** 起動時・接続先変更時: 未送信の変更がないタブは GitHub の絵を受け取る */
+/**
+ * 起動時・接続先変更時。
+ * 自動同期オン: 未送信の変更がないタブは GitHub の絵を受け取る。
+ * 手動: 相手の更新があるかを確認して印を出すだけ(空の新しいタブだけは受け取る)。
+ */
 async function bootSync() {
   if (!sync.gh) return;
+  if (!sync.auto) { for (const t of tabs) t.sync.checkedAt = 0; await checkRemoteTick(); return; }
   for (const t of [...tabs]) {
     if (t.sync.dirty) continue; // 未送信の変更は消さない(自動同期が「両方に変更あり」を判定する)
     try {

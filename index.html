@@ -139,8 +139,8 @@
     <div class="row"><label>オーナー</label><input type="text" id="gh-owner" style="flex:1" placeholder="user または org"></div>
     <div class="row"><label>リポジトリ</label><input type="text" id="gh-repo" style="flex:1"></div>
     <div class="row"><label>ブランチ</label><input type="text" id="gh-branch" value="main" style="flex:1"></div>
-    <div class="row"><label>自動同期</label><input type="checkbox" id="gh-auto" checked><span style="color:var(--muted)">描いたら自動で送り、相手の更新は自動で受け取る</span></div>
-    <p class="note">タブの名前がリポジトリ内のフォルダ名になります(タブをダブルタップで変更)。同期の操作はタブバー右の「送る / 受け取る」ボタンで行います。</p>
+    <div class="row"><label>自動同期</label><input type="checkbox" id="gh-auto"><span style="color:var(--muted)">(実験的)描いたら自動で送り、相手の更新は自動で受け取る</span></div>
+    <p class="note">通常はオフのままにして、タブバー右の「送る / 受け取る」ボタンで同期してください。オフでも相手の更新があるかは 30 秒ごとに確認して印(↓)を出します。タブの名前がリポジトリ内のフォルダ名になります(タブをダブルタップで変更)。</p>
     <p class="note" id="gh-msg"></p>
     <div class="actions">
       <button id="gh-test">接続テスト</button>
