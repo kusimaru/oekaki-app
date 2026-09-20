@@ -36,7 +36,6 @@
     <div class="group">
       <span id="doc-info"></span>
       <span id="sync-status"></span>
-      <button id="btn-sync-now" title="今すぐ同期" hidden>同期</button>
       <button id="btn-github">GitHub</button>
     </div>
   </header>
@@ -44,6 +43,10 @@
   <div id="tabbar">
     <div id="tabs"></div>
     <button id="btn-tab-new" title="新規キャンバス">＋</button>
+    <div id="sync-buttons" hidden>
+      <button id="btn-send" title="このタブの絵で GitHub 側を上書きします">この端末の絵を送る</button>
+      <button id="btn-receive" title="GitHub の絵でこのタブを上書きします">GitHub の絵を受け取る</button>
+    </div>
   </div>
 
   <aside id="toolbar" title="ドラッグで並べ替え"></aside>
@@ -136,14 +139,10 @@
     <div class="row"><label>オーナー</label><input type="text" id="gh-owner" style="flex:1" placeholder="user または org"></div>
     <div class="row"><label>リポジトリ</label><input type="text" id="gh-repo" style="flex:1"></div>
     <div class="row"><label>ブランチ</label><input type="text" id="gh-branch" value="main" style="flex:1"></div>
-    <div class="row"><label>フォルダ</label><input type="text" id="gh-dir" value="drawing1" style="flex:1" placeholder="現在のタブの保存フォルダ名"></div>
-    <p class="note">フォルダ名はタブごとに異なります(タブ名 = リポジトリ内のフォルダ名)。ここを変えると現在のタブの名前が変わります。</p>
-    <div class="row"><label>自動同期</label><input type="checkbox" id="gh-auto" checked><span style="color:var(--muted)">編集後に自動プッシュ / 定期的にプル</span></div>
+    <div class="row"><label>自動同期</label><input type="checkbox" id="gh-auto" checked><span style="color:var(--muted)">描いたら自動で送り、相手の更新は自動で受け取る</span></div>
+    <p class="note">タブの名前がリポジトリ内のフォルダ名になります(タブをダブルタップで変更)。同期の操作はタブバー右の「送る / 受け取る」ボタンで行います。</p>
     <p class="note" id="gh-msg"></p>
     <div class="actions">
-      <button id="gh-pull">プル(取得)</button>
-      <button id="gh-push">プッシュ(送信)</button>
-      <button id="gh-force-push" title="リモートを上書き">強制プッシュ</button>
       <button id="gh-close">閉じる</button>
       <button id="gh-save" class="active">設定を保存</button>
     </div>

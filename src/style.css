@@ -36,6 +36,14 @@ button.active { background: var(--accent); color: #222; border-color: var(--acce
 .tab .close { border: none; background: transparent; color: var(--muted); padding: 2px 5px; border-radius: 4px; font-size: 13px; line-height: 1; }
 .tab .close:hover { background: #555; color: #fff; }
 #btn-tab-new { border: none; border-radius: 0; background: transparent; padding: 0 12px; font-size: 16px; color: var(--muted); }
+#sync-buttons { display: flex; align-items: center; gap: 4px; padding: 0 6px; border-left: 1px solid var(--panel-border); }
+#sync-buttons button { padding: 4px 8px; font-size: 12px; white-space: nowrap; }
+#sync-buttons button.attention { background: var(--accent); color: #222; border-color: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { filter: brightness(1.25); } }
+.tab .mark { font-size: 11px; }
+.tab .mark.sent { color: #8fd18f; }
+.tab .mark.unsent { color: var(--accent); }
+.tab .mark.remote { color: #7cc4ff; }
 #btn-tab-new:hover { background: #3f3f3f; color: #fff; }
 #toolbar { grid-area: tools; display: flex; flex-direction: column; gap: 2px; padding: 6px 4px; background: #2e2e2e; border-right: 1px solid var(--panel-border); overflow-y: auto; }
 #toolbar button { width: 42px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; background: transparent; border-color: transparent; color: #d8d8d8; cursor: grab; position: relative; }

@@ -127,6 +127,23 @@ export class GitHubSync {
     return commit.sha as string;
   }
 
+  /** リモートのフォルダに project.json があるか */
+  async remoteHasProject(): Promise<boolean> {
+    const head = await this.getHead();
+    if (!head) return false;
+    const commit = await this.api(`${this.base}/git/commits/${head}`);
+    const tree = await this.api(`${this.base}/git/trees/${commit.tree.sha}?recursive=1`);
+    return (tree.tree as any[]).some(item => item.type === 'blob' && item.path === this.prefix + 'project.json');
+  }
+
+  /** このフォルダを最後に更新したコミットのメッセージと日時 */
+  async lastCommitInfo(): Promise<{ message: string; date: string } | null> {
+    const dir = this.prefix.replace(/\/$/, '');
+    const list = await this.api(`${this.base}/commits?path=${encodeURIComponent(dir)}&sha=${encodeURIComponent(this.cfg.branch)}&per_page=1`);
+    const c = list?.[0]?.commit;
+    return c ? { message: c.message as string, date: c.committer?.date ?? c.author?.date } : null;
+  }
+
   /** プロジェクトフォルダ配下の全ファイルを取得 */
   async pull(): Promise<{ sha: string | null; files: Map<string, Uint8Array> }> {
     const files = new Map<string, Uint8Array>();

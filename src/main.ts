@@ -19,10 +19,18 @@ interface SyncState {
   dirty: boolean;
   lastEdit: number;
   busy: boolean;
+  /** 両方(この端末と GitHub)に変更があり、どちらを残すか選ぶ必要がある */
   conflict: boolean;
+  /** GitHub 側が自分の知らないコミットに進んでいる */
+  remoteChanged: boolean;
+  /** GitHub 側を最後に更新した端末と日時 */
+  lastInfo: { device: string; date: string } | null;
   knownPaths: Set<string>;
 }
-const newSyncState = (): SyncState => ({ lastSha: null, synced: false, dirty: false, lastEdit: 0, busy: false, conflict: false, knownPaths: new Set() });
+const newSyncState = (): SyncState => ({ lastSha: null, synced: false, dirty: false, lastEdit: 0, busy: false, conflict: false, remoteChanged: false, lastInfo: null, knownPaths: new Set() });
+/** コミットメッセージに入れる端末名 */
+const DEVICE = /iPad|iPhone/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ? 'iPad'
+  : /Android/.test(navigator.userAgent) ? 'Android' : 'PC';
 
 /** 開いているキャンバス 1 枚分の状態。名前は GitHub のフォルダ名を兼ねる */
 interface Tab {
@@ -869,13 +877,21 @@ function renderTabs() {
     const b = document.createElement('div');
     b.className = 'tab' + (t === cur ? ' active' : '');
     b.dataset.id = t.id;
-    b.title = `${t.name}${t.sync.dirty ? '(未同期の変更あり)' : ''}\nダブルタップで名前を変更`;
     const name = document.createElement('span');
     name.className = 'tab-name';
     name.textContent = t.name;
+    // 同期の印: ✓ 送信済み / ● 未送信 / ↓ 相手の更新あり
     const dirty = document.createElement('span');
-    dirty.className = 'dirty';
-    dirty.textContent = t.sync.dirty && sync.gh ? '●' : '';
+    dirty.className = 'mark';
+    let state = '';
+    if (sync.gh) {
+      const s = t.sync;
+      if (s.conflict || (s.dirty && s.remoteChanged)) { dirty.textContent = '●↓'; dirty.classList.add('unsent'); state = '両方に変更あり'; }
+      else if (s.remoteChanged) { dirty.textContent = '↓'; dirty.classList.add('remote'); state = '相手の更新あり'; }
+      else if (s.dirty) { dirty.textContent = '●'; dirty.classList.add('unsent'); state = '未送信'; }
+      else if (s.synced) { dirty.textContent = '✓'; dirty.classList.add('sent'); state = '送信済み'; }
+    }
+    b.title = `${t.name}${state ? `(${state})` : ''}\nダブルタップで名前を変更`;
     const close = document.createElement('button');
     close.className = 'close';
     close.textContent = '×';
@@ -967,8 +983,13 @@ const dbPut = (key: string, value: unknown) => dbRun('readwrite', s => { s.put(v
 const dbGet = <T,>(key: string) => dbRun<T>('readonly', s => s.get(key) as IDBRequest<T>);
 const dbDelete = (key: string) => dbRun('readwrite', s => { s.delete(key); });
 
+interface TabIndexEntry { id: string; name: string; sync?: { lastSha: string | null; synced: boolean; dirty: boolean; lastEdit: number } }
 function saveTabIndex() {
-  dbPut(TAB_INDEX_KEY, { activeId: cur?.id, tabs: tabs.map(t => ({ id: t.id, name: t.name })) }).catch(() => {});
+  const entries: TabIndexEntry[] = tabs.map(t => ({
+    id: t.id, name: t.name,
+    sync: { lastSha: t.sync.lastSha, synced: t.sync.synced, dirty: t.sync.dirty, lastEdit: t.sync.lastEdit },
+  }));
+  dbPut(TAB_INDEX_KEY, { activeId: cur?.id, tabs: entries }).catch(() => {});
 }
 async function saveTab(tab: Tab) {
   try {
@@ -998,13 +1019,15 @@ function flushAutosave() {
 /** 前回開いていたタブを復元する。1 枚でも復元できたら true */
 async function restoreTabs(): Promise<boolean> {
   try {
-    const index = await dbGet<{ activeId?: string; tabs: { id: string; name: string }[] }>(TAB_INDEX_KEY);
+    const index = await dbGet<{ activeId?: string; tabs: TabIndexEntry[] }>(TAB_INDEX_KEY);
     let restoredAny = false;
     if (index?.tabs?.length) {
       for (const entry of index.tabs) {
         const saved = await dbGet<{ name: string; manifest: Manifest }>(tabKey(entry.id));
         if (!saved) continue;
-        addTab(await deserialize(saved.manifest, async () => null), saved.name || entry.name, { activate: false, id: entry.id });
+        const tab = addTab(await deserialize(saved.manifest, async () => null), saved.name || entry.name, { activate: false, id: entry.id });
+        // 未送信の変更があったかどうかを引き継ぐ(起動時に GitHub 側で上書きしないため)
+        if (entry.sync) Object.assign(tab.sync, entry.sync);
         restoredAny = true;
       }
       const active = tabs.find(t => t.id === index.activeId) ?? tabs[0];
@@ -1054,59 +1077,88 @@ function setStatus(msg: string, cls: '' | 'ok' | 'err' = '') {
   el.className = cls;
   $('gh-msg').textContent = msg;
 }
+function timeAgo(iso: string): string {
+  const sec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (sec < 60) return 'たった今';
+  if (sec < 3600) return `${Math.floor(sec / 60)} 分前`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)} 時間前`;
+  return `${Math.floor(sec / 86400)} 日前`;
+}
 function updateSyncStatus() {
-  if (!sync.gh) { setStatus(''); $('btn-sync-now').hidden = true; return; }
-  $('btn-sync-now').hidden = false;
+  const buttons = $('sync-buttons');
+  if (!sync.gh) { setStatus(''); buttons.hidden = true; return; }
+  buttons.hidden = false;
   const s = cur.sync;
+  const send = $('btn-send'), recv = $('btn-receive');
+  const both = s.conflict || (s.dirty && s.remoteChanged);
+  send.classList.toggle('attention', both);
+  recv.classList.toggle('attention', both);
+  const last = s.lastInfo ? ` · 最終更新 ${s.lastInfo.device} ${timeAgo(s.lastInfo.date)}` : '';
   if (s.busy) return;
-  if (s.conflict) setStatus(`GitHub(${cur.name}): 競合。プル(ローカル破棄)か強制プッシュを選んでください`, 'err');
-  else if (!s.synced) setStatus(`GitHub(${cur.name}): 未同期(プルかプッシュを実行)`);
-  else if (s.dirty) setStatus(`GitHub(${cur.name}): 変更あり` + (sync.auto ? '(自動プッシュ待ち)' : ''));
-  else setStatus(`GitHub(${cur.name}): 同期済み`, 'ok');
+  if (both) setStatus(`「${cur.name}」は ${DEVICE === 'iPad' ? 'PC' : 'iPad'} でも変更されています。どちらを残すかボタンで選んでください${last}`, 'err');
+  else if (s.remoteChanged) setStatus(`「${cur.name}」に相手の更新があります(自動で受け取ります)${last}`);
+  else if (s.dirty) setStatus(`「${cur.name}」: 未送信の変更あり` + (sync.auto ? '(まもなく自動で送ります)' : '') + last);
+  else if (s.synced) setStatus(`「${cur.name}」: 送信済み${last}`, 'ok');
+  else setStatus(`「${cur.name}」: GitHub とまだつながっていません(描くと自動で送ります)`);
 }
 function loadGhConfig(): (GhConfig & { auto: boolean }) | null {
   try { return JSON.parse(localStorage.getItem(GH_KEY) || 'null'); } catch { return null; }
 }
-function applyGhConfig(cfg: (GhConfig & { auto: boolean }) | null) {
+/** 接続設定を反映する。resetTabs=true なら各タブの同期状態(どのコミットまで受け取ったか)を忘れる */
+function applyGhConfig(cfg: (GhConfig & { auto: boolean }) | null, resetTabs = false) {
   sync.cfg = cfg;
   sync.gh = cfg && cfg.token && cfg.owner && cfg.repo ? new GitHubSync(cfg) : null;
   sync.auto = cfg?.auto ?? true;
-  for (const t of tabs) t.sync = { ...newSyncState(), dirty: t.sync.dirty, lastEdit: t.sync.lastEdit };
+  if (resetTabs) for (const t of tabs) t.sync = { ...newSyncState(), dirty: t.sync.dirty, lastEdit: t.sync.lastEdit };
   updateSyncStatus();
   renderTabs();
 }
+async function refreshLastInfo(tab: Tab) {
+  try {
+    const info = await ghFor(tab)?.lastCommitInfo();
+    if (info) tab.sync.lastInfo = { device: /from (\S+)/.exec(info.message)?.[1] ?? '?', date: info.date };
+  } catch { /* 表示用なので失敗しても無視 */ }
+}
+/**
+ * この端末の絵で GitHub 側を上書きする。
+ * force=false のときは、自分が知らないコミットがあれば ConflictError で止まる(自動送信用)。
+ */
 async function push(tab: Tab, force = false) {
   const gh = ghFor(tab);
   const s = tab.sync;
   if (!gh || s.busy || (tab === cur && tools.busy)) return;
   s.busy = true;
-  if (tab === cur) { tools.commitFloating(); setStatus(`GitHub(${tab.name}): プッシュ中…`); }
+  if (tab === cur) { tools.commitFloating(); setStatus(`「${tab.name}」を送信中…`); }
   try {
     const { manifest, files } = await serialize(tab.doc, 'files');
     const repoFiles = [
       { path: PROJECT_FILE, content: JSON.stringify(manifest) },
       ...(await Promise.all(files.map(async f => ({ path: f.path, content: new Uint8Array(await f.blob.arrayBuffer()) })))),
     ];
-    s.lastSha = await gh.commitFiles(repoFiles, `update ${tab.name} ${new Date().toISOString()}`, { expectedHead: s.lastSha, force });
+    s.lastSha = await gh.commitFiles(repoFiles, `update ${tab.name} from ${DEVICE} ${new Date().toISOString()}`, { expectedHead: force ? undefined : s.lastSha, force });
     s.knownPaths = gh.knownPaths;
     s.dirty = false;
     s.synced = true;
     s.conflict = false;
+    s.remoteChanged = false;
+    s.lastInfo = { device: DEVICE, date: new Date().toISOString() };
+    saveTabIndex();
   } catch (e) {
-    if (e instanceof ConflictError) s.conflict = true;
-    else if (tab === cur) setStatus(`GitHub(${tab.name}): エラー ` + (e as Error).message, 'err');
+    if (e instanceof ConflictError) { s.conflict = true; s.remoteChanged = true; await refreshLastInfo(tab); }
+    else if (tab === cur) setStatus(`送信に失敗しました: ` + (e as Error).message, 'err');
   } finally {
     s.busy = false;
     if (tab === cur) updateSyncStatus();
     renderTabs();
   }
 }
+/** GitHub の絵でこのタブを上書きする */
 async function pull(tab: Tab) {
   const gh = ghFor(tab);
   const s = tab.sync;
   if (!gh || s.busy || (tab === cur && tools.busy)) return;
   s.busy = true;
-  if (tab === cur) setStatus(`GitHub(${tab.name}): 取得中…`);
+  if (tab === cur) setStatus(`「${tab.name}」を受信中…`);
   try {
     const { sha, files } = await gh.pull();
     s.knownPaths = gh.knownPaths;
@@ -1119,38 +1171,67 @@ async function pull(tab: Tab) {
       });
       replaceTabDoc(tab, d);
       saveTab(tab);
+      s.synced = true;
     }
     s.lastSha = sha;
     s.dirty = false;
-    s.synced = true;
     s.conflict = false;
-    if (tab === cur) setStatus(pj ? `GitHub(${tab.name}): 取得しました` : `GitHub(${tab.name}): リモートにまだありません(プッシュで作成)`, pj ? 'ok' : '');
+    s.remoteChanged = false;
+    await refreshLastInfo(tab);
+    saveTabIndex();
+    if (tab === cur) setStatus(pj ? `「${tab.name}」を受け取りました` : `GitHub に「${tab.name}」はまだありません`, pj ? 'ok' : '');
   } catch (e) {
-    if (tab === cur) setStatus(`GitHub(${tab.name}): エラー ` + (e as Error).message, 'err');
+    if (tab === cur) setStatus(`受信に失敗しました: ` + (e as Error).message, 'err');
   } finally {
     s.busy = false;
+    if (tab === cur) updateSyncStatus();
     renderTabs();
   }
 }
-/** すべてのタブについて、変更があればプッシュ、リモートが進んでいればプル */
+/**
+ * 自動同期。タブごとに:
+ *  - 未送信の変更があり相手が進んでいなければ送る。相手も進んでいれば「両方に変更あり」にして止める
+ *  - 変更がなく相手が進んでいれば受け取る
+ *  - まだつながっていないタブは、GitHub に同名の絵がなければ送り、あれば「両方に変更あり」にする
+ */
 async function autoSyncTick() {
   if (!sync.gh || !sync.auto || !navigator.onLine) return;
   for (const tab of [...tabs]) {
     const s = tab.sync;
     if (s.busy || s.conflict || (tab === cur && tools.busy)) continue;
-    if (s.dirty) {
-      if (s.synced && Date.now() - s.lastEdit > 4000) await push(tab);
-      continue;
-    }
-    if (!s.synced) continue;
+    if (s.dirty && Date.now() - s.lastEdit < 4000) continue;
     try {
-      const head = await ghFor(tab)!.getHead();
-      if (head !== s.lastSha) await pull(tab);
+      const gh = ghFor(tab)!;
+      if (!s.synced) {
+        if (!s.dirty) continue;
+        if (await gh.remoteHasProject()) { s.conflict = true; s.remoteChanged = true; await refreshLastInfo(tab); }
+        else await push(tab, true);
+      } else if (s.dirty) {
+        await push(tab); // 相手が進んでいれば ConflictError → 両方に変更あり
+      } else {
+        const head = await gh.getHead();
+        if (head !== s.lastSha) { s.remoteChanged = true; await pull(tab); }
+      }
     } catch { /* 次回に再試行 */ }
+    if (tab === cur) updateSyncStatus();
+    renderTabs();
   }
 }
 setInterval(autoSyncTick, 10_000);
+setInterval(() => { if (sync.gh) updateSyncStatus(); }, 60_000); // 「n 分前」の表示更新
 document.addEventListener('visibilitychange', () => { if (!document.hidden) autoSyncTick(); });
+
+$('btn-send').addEventListener('click', async () => {
+  if (!sync.gh) return;
+  cur.sync.conflict = false;
+  await push(cur, true);
+});
+$('btn-receive').addEventListener('click', async () => {
+  if (!sync.gh) return;
+  if (cur.sync.dirty && !confirm(`「${cur.name}」でこの端末で描いた分は消え、GitHub の絵に置き換わります。よろしいですか?`)) return;
+  cur.sync.conflict = false;
+  await pull(cur);
+});
 
 const dlgGh = $<HTMLDialogElement>('dlg-github');
 $('btn-github').addEventListener('click', () => {
@@ -1159,7 +1240,6 @@ $('btn-github').addEventListener('click', () => {
   $<HTMLInputElement>('gh-owner').value = cfg?.owner ?? '';
   $<HTMLInputElement>('gh-repo').value = cfg?.repo ?? '';
   $<HTMLInputElement>('gh-branch').value = cfg?.branch ?? 'main';
-  $<HTMLInputElement>('gh-dir').value = cur.name;
   $<HTMLInputElement>('gh-auto').checked = cfg?.auto ?? true;
   updateSyncStatus();
   dlgGh.showModal();
@@ -1180,27 +1260,25 @@ function saveGhForm() {
   const prev = sync.cfg;
   const changed = !prev || prev.token !== cfg.token || prev.owner !== cfg.owner || prev.repo !== cfg.repo || prev.branch !== cfg.branch;
   localStorage.setItem(GH_KEY, JSON.stringify(cfg));
-  if (changed) applyGhConfig(cfg);
+  if (changed) { applyGhConfig(cfg, true); bootSync(); }
   else { sync.cfg = cfg; sync.auto = cfg.auto; }
-  const dir = $<HTMLInputElement>('gh-dir').value.trim().replace(/^\/+|\/+$/g, '');
-  if (dir && dir !== cur.name) renameTab(cur, dir);
   updateSyncStatus();
 }
 $('gh-save').addEventListener('click', () => { saveGhForm(); dlgGh.close(); });
 $('gh-close').addEventListener('click', () => dlgGh.close());
-$('gh-pull').addEventListener('click', async () => {
-  saveGhForm();
-  if (cur.sync.dirty && !confirm('このタブのローカルの変更を破棄してリモートを取得しますか?')) return;
-  cur.sync.conflict = false;
-  await pull(cur);
-});
-$('gh-push').addEventListener('click', async () => { saveGhForm(); await push(cur); });
-$('gh-force-push').addEventListener('click', async () => {
-  saveGhForm();
-  if (!confirm('リモートの内容を上書きします。よろしいですか?')) return;
-  await push(cur, true);
-});
-$('btn-sync-now').addEventListener('click', () => (cur.sync.dirty ? push(cur) : pull(cur)));
+
+/** 起動時・接続先変更時: 未送信の変更がないタブは GitHub の絵を受け取る */
+async function bootSync() {
+  if (!sync.gh) return;
+  for (const t of [...tabs]) {
+    if (t.sync.dirty) continue; // 未送信の変更は消さない(自動同期が「両方に変更あり」を判定する)
+    try {
+      if (await ghFor(t)!.remoteHasProject()) await pull(t);
+    } catch { /* 次回の自動同期で再試行 */ }
+  }
+  updateSyncStatus();
+  renderTabs();
+}
 
 // ---------------- 起動 ----------------
 async function boot() {
@@ -1212,11 +1290,7 @@ async function boot() {
   const restored = await restoreTabs();
   if (!restored) addTab(createDoc('bitmap', 1024, 768), 'drawing1');
   applyGhConfig(loadGhConfig());
-  if (sync.gh && sync.auto) {
-    // 起動時はリモート優先。リモートにないタブはローカルのまま
-    for (const t of [...tabs]) await pull(t);
-    updateSyncStatus();
-  }
   afterEdit();
+  await bootSync();
 }
 boot();
