@@ -85,7 +85,7 @@ const HANDLES: Handle[] = [
 const handleLocal = (b: Rect, h: Handle): Pt => ({ x: b.x + ((h.hx + 1) / 2) * b.w, y: b.y + ((h.hy + 1) / 2) * b.h });
 
 type Op =
-  | { t: 'marquee'; start: Pt; cur: Pt; shift: boolean }
+  | { t: 'marquee'; start: Pt; cur: Pt; shift: boolean; /** 自由変形の範囲指定として使う */ forTransform?: boolean }
   | { t: 'lasso'; pts: Pt[]; shift: boolean }
   | { t: 'stroke'; canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; last: Pt; lastW: number; carry: number; before: Snap }
   | { t: 'erase'; last: Pt; lastW: number; carry: number; before: Snap }
@@ -283,12 +283,19 @@ export class Tools {
     return true;
   }
 
-  /** 自由変形ツール選択時: 枠を出す(ベジェで未選択なら、図形をクリックしたときに出す) */
+  /**
+   * 自由変形ツール選択時: 選択範囲(ベジェは選択図形)があれば枠を出す。
+   * なければ、キャンバス全体ではなく、ユーザーがドラッグで囲んだ範囲に枠を出す(downTransform)
+   */
   private beginTransform() {
     const layer = this.active;
     if (this.lockedNotice(layer)) return;
-    if (layer.kind === 'bitmap') this.ensureFloating();
-    else this.ensureVectorXf();
+    if (layer.kind === 'bitmap') {
+      if (this.selection) this.ensureFloating();
+      else this.app.notify('変形する範囲をドラッグで囲んでください');
+    } else if (!this.ensureVectorXf()) {
+      this.app.notify('変形する図形をクリックするか、ドラッグで囲んでください');
+    }
   }
 
   /** 現在の枠(変形パラメータと元の範囲) */
@@ -433,14 +440,20 @@ export class Tools {
 
   private downTransform(layer: Layer, p: Pt, info: InputInfo) {
     if (!this.box()) {
-      if (layer.kind === 'bitmap') this.ensureFloating();
-      else {
-        // 未選択なら押した図形を選んで枠を出す
+      if (layer.kind === 'bitmap') {
+        if (this.selection) this.ensureFloating();
+        else { this.op = { t: 'marquee', start: p, cur: p, shift: false, forTransform: true }; return; } // 範囲をドラッグで指定
+      } else {
+        // 未選択なら押した図形を選んで枠を出す。図形がなければドラッグで囲む
         const hit = this.hitAt(layer, p);
-        if (!hit) return;
-        if (!info.shift) this.selectedShapes.clear();
-        this.selectedShapes.add(hit.id);
-        this.ensureVectorXf();
+        if (hit) {
+          if (!info.shift) this.selectedShapes.clear();
+          this.selectedShapes.add(hit.id);
+          this.ensureVectorXf();
+        } else {
+          this.op = { t: 'marquee', start: p, cur: p, shift: info.shift, forTransform: true };
+          return;
+        }
       }
       if (!this.box()) return;
     }
@@ -651,9 +664,11 @@ export class Tools {
         const tiny = r.w < 2 && r.h < 2;
         if (layer.kind === 'bitmap') {
           this.selection = tiny ? null : { kind: 'rect', points: [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y + r.h }] };
+          if (op.forTransform && this.selection) this.ensureFloating();
         } else {
           if (!op.shift) this.selectedShapes.clear();
           if (!tiny) for (const s of layer.shapes) if (s.anchors.some(a => pointInRect(a, r))) this.selectedShapes.add(s.id);
+          if (op.forTransform && this.selectedShapes.size) this.ensureVectorXf();
         }
         break;
       }
