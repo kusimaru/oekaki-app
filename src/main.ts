@@ -1106,7 +1106,14 @@ function timeAgo(iso: string): string {
 }
 function updateSyncStatus() {
   const buttons = $('sync-buttons');
-  if (!sync.gh) { setStatus(''); buttons.hidden = true; return; }
+  if (!sync.gh) {
+    // 未設定であることを常時表示(バナーは出さない)
+    const el = $('sync-status');
+    el.textContent = 'GitHub: 未設定(右上の GitHub から設定)';
+    el.className = '';
+    buttons.hidden = true;
+    return;
+  }
   buttons.hidden = false;
   const s = cur.sync;
   const send = $('btn-send'), recv = $('btn-receive');
