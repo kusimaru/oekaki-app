@@ -4,7 +4,7 @@ import { activeLayer, composite, compositeToCanvas, createDoc, createLayer, ctx2
 import { History, layersState, snap } from './history';
 import { Tools, type AppCtx, type ToolState } from './tools';
 import { download, exportPng, exportPsd, exportSvg } from './exporters';
-import { PROJECT_FILE, deserialize, serialize, type Manifest } from './project';
+import { PROJECT_FILE, blobToDataUrl, canvasToBlob, deserialize, serialize, type Manifest } from './project';
 import { ConflictError, GitHubSync, type GhConfig } from './github';
 import { ICONS } from './icons';
 import { IMAGE_EXT, PSD_EXT, importImage, importPsd } from './importers';
@@ -1448,6 +1448,50 @@ viewport.addEventListener('drop', async ev => {
   for (const f of [...(ev.dataTransfer?.files ?? [])]) await openFile(f);
 });
 $('btn-png').addEventListener('click', () => { tools.commitTransform(); exportPng(doc, cur.name); });
+
+// ---------------- 余白ノートへ送る ----------------
+// 同じ kusimaru.github.io 上の余白ノートと IndexedDB('oekaki-share' / 'inbox')を共有し、
+// 合成した PNG を置いてから余白ノートを開く。余白ノート側が起動時 / 画面に戻ったときに取り出して今のページに貼る。
+const YOHAKU_URL_KEY = 'oekaki.yohakuUrl';
+function yohakuUrl(): string {
+  const custom = localStorage.getItem(YOHAKU_URL_KEY);
+  if (custom) return custom;
+  return location.hostname === 'kusimaru.github.io' ? new URL('../yohaku-note/', location.href).href : 'https://kusimaru.github.io/yohaku-note/';
+}
+function openShareInbox(): Promise<IDBDatabase> {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('oekaki-share', 1);
+    r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('inbox')) r.result.createObjectStore('inbox', { keyPath: 'id' }); };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function sendToYohaku() {
+  tools.commitTransform();
+  const blob = await canvasToBlob(compositeToCanvas(doc));
+  const isIosApp = /iPad|iPhone/.test(navigator.userAgent) && (navigator as any).standalone === true;
+  // iPad のホーム画面アプリは保存領域が別なので、共有シートで渡す(「ファイルに保存」→ 余白ノートの「画像を追加」)
+  if (isIosApp && navigator.canShare?.({ files: [new File([blob], `${cur.name}.png`, { type: 'image/png' })] })) {
+    try { await navigator.share({ files: [new File([blob], `${cur.name}.png`, { type: 'image/png' })], title: cur.name }); } catch { /* キャンセル */ }
+    return;
+  }
+  try {
+    const src = await blobToDataUrl(blob);
+    const idb = await openShareInbox();
+    await new Promise<void>((res, rej) => {
+      const tx = idb.transaction('inbox', 'readwrite');
+      tx.objectStore('inbox').put({ id: uid(), name: cur.name, src, width: doc.width, height: doc.height, createdAt: Date.now() });
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+    idb.close();
+    setStatus(`「${cur.name}」を余白ノートに送りました。余白ノートを開くと今のページに貼り付きます`, 'ok');
+    window.open(yohakuUrl(), 'yohaku-note');
+  } catch (e) {
+    setStatus('余白ノートへ送れませんでした: ' + (e as Error).message, 'err');
+  }
+}
+$('btn-yohaku').addEventListener('click', sendToYohaku);
 $('btn-psd').addEventListener('click', async () => {
   tools.commitTransform();
   try { await exportPsd(doc, cur.name); } catch (e) { alert('PSD 書き出しに失敗: ' + (e as Error).message); }
