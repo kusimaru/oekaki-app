@@ -1452,12 +1452,6 @@ $('btn-png').addEventListener('click', () => { tools.commitTransform(); exportPn
 // ---------------- 余白ノートへ送る ----------------
 // 同じ kusimaru.github.io 上の余白ノートと IndexedDB('oekaki-share' / 'inbox')を共有し、
 // 合成した PNG を置いてから余白ノートを開く。余白ノート側が起動時 / 画面に戻ったときに取り出して今のページに貼る。
-const YOHAKU_URL_KEY = 'oekaki.yohakuUrl';
-function yohakuUrl(): string {
-  const custom = localStorage.getItem(YOHAKU_URL_KEY);
-  if (custom) return custom;
-  return location.hostname === 'kusimaru.github.io' ? new URL('../yohaku-note/', location.href).href : 'https://kusimaru.github.io/yohaku-note/';
-}
 function openShareInbox(): Promise<IDBDatabase> {
   return new Promise((res, rej) => {
     const r = indexedDB.open('oekaki-share', 1);
@@ -1485,8 +1479,8 @@ async function sendToYohaku() {
       tx.onerror = () => rej(tx.error);
     });
     idb.close();
-    setStatus(`「${cur.name}」を余白ノートに送りました。余白ノートを開くと今のページに貼り付きます`, 'ok');
-    window.open(yohakuUrl(), 'yohaku-note');
+    // タブは開かない。アプリ化した余白ノートを開く(前面にする)と、その時点で受け取って貼り付ける
+    setStatus(`「${cur.name}」を余白ノートに送りました。余白ノートのアプリを開くと「データ受け取り › お絵かきツール」に保存されます`, 'ok');
   } catch (e) {
     setStatus('余白ノートへ送れませんでした: ' + (e as Error).message, 'err');
   }
