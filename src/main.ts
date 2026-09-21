@@ -1478,7 +1478,10 @@ async function sendToYohaku() {
       tx.oncomplete = () => res();
       tx.onerror = () => rej(tx.error);
     });
+    // 書けたか読み返して件数を出す(診断用)
+    const n = await new Promise<number>((res, rej) => { const q = idb.transaction('inbox').objectStore('inbox').count(); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
     idb.close();
+    const ua = /Edg\//.test(navigator.userAgent) ? 'Edge' : /Chrome\//.test(navigator.userAgent) ? 'Chrome' : /Safari\//.test(navigator.userAgent) ? 'Safari' : 'その他';
     // ブラウザが違う(保存領域を共有できない)場合の保険として、クリップボードにも画像を入れる。
     // 余白ノートで貼り付け(Ctrl+V)すると、text/plain の印を見て「データ受け取り › お絵かきツール」に入る
     let copied = false;
@@ -1489,7 +1492,7 @@ async function sendToYohaku() {
       }
     } catch { /* 権限なしなどは無視 */ }
     // タブは開かない。アプリ化した余白ノートを開く(前面にする)と、その時点で受け取って貼り付ける
-    setStatus(`「${cur.name}」を余白ノートに送りました。余白ノートのアプリを開くと「データ受け取り › お絵かきツール」に保存されます` + (copied ? '。届かない場合は余白ノートで Ctrl+V(貼り付け)してください' : ''), 'ok');
+    setStatus(`「${cur.name}」を余白ノートに送りました(${ua} の受け渡し箱: ${n} 枚${copied ? '、クリップボードにもコピー済み' : ''})。余白ノートのアプリを開くと「データ受け取り › お絵かきツール」に保存されます。届かない場合は余白ノートで Ctrl+V`, 'ok');
   } catch (e) {
     setStatus('余白ノートへ送れませんでした: ' + (e as Error).message, 'err');
   }
