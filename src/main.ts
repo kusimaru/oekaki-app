@@ -1491,8 +1491,21 @@ async function sendToYohaku() {
         copied = true;
       }
     } catch { /* 権限なしなどは無視 */ }
+    // GitHub 経由(iPad のホーム画面アプリなど、保存領域を共有できない相手にも届く)。
+    // oekaki-data の `_yohaku-inbox/` に置き、余白ノート側が取りに来て削除する
+    let viaGithub = false;
+    if (sync.gh && sync.cfg) {
+      try {
+        await new GitHubSync({ ...sync.cfg, dir: '' }).commitChanges(
+          [{ path: `_yohaku-inbox/${Date.now()}-${cur.name}.png`, content: new Uint8Array(await blob.arrayBuffer()) }],
+          `send ${cur.name} to yohaku-note from ${DEVICE}`,
+        );
+        viaGithub = true;
+      } catch (e) { console.warn('yohaku via github', e); }
+    }
     // タブは開かない。アプリ化した余白ノートを開く(前面にする)と、その時点で受け取って貼り付ける
-    setStatus(`「${cur.name}」を余白ノートに送りました(${ua} の受け渡し箱: ${n} 枚${copied ? '、クリップボードにもコピー済み' : ''})。余白ノートのアプリを開くと「データ受け取り › お絵かきツール」に保存されます。届かない場合は余白ノートで Ctrl+V`, 'ok');
+    const how = viaGithub ? 'GitHub 経由でも送りました。余白ノートの「お絵かきツールから受け取る」を設定していれば、開いたときに自動で届きます' : 'GitHub 未設定のため、同じブラウザの余白ノートにだけ届きます';
+    setStatus(`「${cur.name}」を余白ノートに送りました(${ua} の受け渡し箱: ${n} 枚${copied ? '、クリップボードにもコピー済み' : ''})。${how}`, 'ok');
   } catch (e) {
     setStatus('余白ノートへ送れませんでした: ' + (e as Error).message, 'err');
   }
