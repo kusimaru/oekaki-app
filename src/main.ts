@@ -1479,8 +1479,17 @@ async function sendToYohaku() {
       tx.onerror = () => rej(tx.error);
     });
     idb.close();
+    // ブラウザが違う(保存領域を共有できない)場合の保険として、クリップボードにも画像を入れる。
+    // 余白ノートで貼り付け(Ctrl+V)すると、text/plain の印を見て「データ受け取り › お絵かきツール」に入る
+    let copied = false;
+    try {
+      if (navigator.clipboard && 'write' in navigator.clipboard && typeof ClipboardItem !== 'undefined') {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob, 'text/plain': new Blob([`oekaki-tool:${cur.name}`], { type: 'text/plain' }) })]);
+        copied = true;
+      }
+    } catch { /* 権限なしなどは無視 */ }
     // タブは開かない。アプリ化した余白ノートを開く(前面にする)と、その時点で受け取って貼り付ける
-    setStatus(`「${cur.name}」を余白ノートに送りました。余白ノートのアプリを開くと「データ受け取り › お絵かきツール」に保存されます`, 'ok');
+    setStatus(`「${cur.name}」を余白ノートに送りました。余白ノートのアプリを開くと「データ受け取り › お絵かきツール」に保存されます` + (copied ? '。届かない場合は余白ノートで Ctrl+V(貼り付け)してください' : ''), 'ok');
   } catch (e) {
     setStatus('余白ノートへ送れませんでした: ' + (e as Error).message, 'err');
   }
