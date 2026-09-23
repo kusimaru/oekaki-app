@@ -396,6 +396,48 @@ function renderToolbar() {
   }
 }
 
+// ---------------- ツールバーの幅 / 上の余白 ----------------
+const TOOLBAR_W_KEY = 'oekaki.toolbarWidth';
+const TOP_GAP_KEY = 'oekaki.topGap';
+function applyToolbarWidth(w: number) {
+  w = Math.round(Math.max(36, Math.min(160, w)));
+  document.documentElement.style.setProperty('--toolbar-w', `${w}px`);
+  // 1 列に収まる最大のボタン幅(最大 42px)。広いときは複数列に並ぶ
+  const inner = w - 8;
+  const cols = Math.max(1, Math.floor((inner + 2) / 44));
+  const btn = Math.min(42, Math.floor((inner - (cols - 1) * 2) / cols));
+  document.documentElement.style.setProperty('--tool-btn', `${Math.max(28, btn)}px`);
+  return w;
+}
+{
+  const saved = Number(localStorage.getItem(TOOLBAR_W_KEY));
+  applyToolbarWidth(saved > 0 ? saved : 52);
+  const resizer = $('toolbar-resizer');
+  resizer.addEventListener('pointerdown', ev => {
+    ev.preventDefault();
+    try { resizer.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
+    resizer.classList.add('active');
+    const left = $('toolbar').getBoundingClientRect().left;
+    let w = 52;
+    const onMove = (e: PointerEvent) => { w = applyToolbarWidth(e.clientX - left); resizeView(); };
+    const onUp = () => {
+      resizer.removeEventListener('pointermove', onMove);
+      resizer.removeEventListener('pointerup', onUp);
+      resizer.removeEventListener('pointercancel', onUp);
+      resizer.classList.remove('active');
+      localStorage.setItem(TOOLBAR_W_KEY, String(w));
+    };
+    resizer.addEventListener('pointermove', onMove);
+    resizer.addEventListener('pointerup', onUp);
+    resizer.addEventListener('pointercancel', onUp);
+  });
+  const gap = $<HTMLInputElement>('opt-top-gap');
+  const applyGap = (on: boolean) => { document.documentElement.style.setProperty('--top-gap', on ? '22px' : '0px'); resizeView(); };
+  gap.checked = localStorage.getItem(TOP_GAP_KEY) === '1';
+  applyGap(gap.checked);
+  gap.addEventListener('change', () => { localStorage.setItem(TOP_GAP_KEY, gap.checked ? '1' : '0'); applyGap(gap.checked); });
+}
+
 const CURSORS: Partial<Record<ToolId, string>> = {
   hand: 'grab', move: 'move', eyedropper: 'copy', bucket: 'cell', select: 'crosshair', lasso: 'crosshair',
   zoom: 'zoom-in', pen: 'none', eraser: 'none',

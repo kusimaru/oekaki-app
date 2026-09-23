@@ -13,17 +13,19 @@
 /* hidden 属性を display:flex などの指定より優先させる(ライブラリや同期ボタンの表示切替に使う) */
 [hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; -webkit-user-select: none; user-select: none; }
+:root { --toolbar-w: 52px; --tool-btn: 42px; --top-gap: 0px; }
 #app {
   display: grid;
-  grid-template-columns: 52px 1fr 240px;
-  grid-template-rows: 44px 34px 1fr;
+  grid-template-columns: var(--toolbar-w) 1fr 240px;
+  grid-template-rows: auto 34px 1fr;
   grid-template-areas: "top top top" "tabs tabs tabs" "tools view side";
   height: 100dvh;
-  padding-top: env(safe-area-inset-top, 0px);
+  /* --top-gap: iPad の小さいウィンドウで、上端の「…」(ウィンドウ移動)をつかみやすくする余白 */
+  padding-top: calc(env(safe-area-inset-top, 0px) + var(--top-gap));
 }
 @supports not (height: 100dvh) { #app { height: 100vh; } }
-#topbar { grid-area: top; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 8px; background: var(--panel); border-bottom: 1px solid var(--panel-border); overflow-x: auto; }
-#topbar .group { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+#topbar { grid-area: top; display: flex; align-items: center; justify-content: space-between; gap: 4px 8px; padding: 4px 8px; min-height: 44px; background: var(--panel); border-bottom: 1px solid var(--panel-border); flex-wrap: wrap; }
+#topbar .group { display: flex; align-items: center; gap: 4px; white-space: nowrap; flex-wrap: wrap; }
 .sep { width: 1px; height: 22px; background: var(--panel-border); margin: 0 4px; }
 button { background: var(--btn); color: var(--text); border: 1px solid var(--panel-border); border-radius: 6px; padding: 5px 9px; cursor: pointer; font: inherit; touch-action: manipulation; }
 button:hover { background: var(--btn-hover); }
@@ -45,10 +47,13 @@ button.active { background: var(--accent); color: #222; border-color: var(--acce
 #sync-banner.ok { border-color: #4f9a4f; color: #b6e8b6; }
 #sync-banner.err { border-color: #c04040; color: #ffb3b3; }
 #btn-tab-new:hover { background: #3f3f3f; color: #fff; }
-#toolbar { grid-area: tools; display: flex; flex-direction: column; padding: 6px 4px; background: #2e2e2e; border-right: 1px solid var(--panel-border); overflow: hidden; }
-#tools { display: flex; flex-direction: column; gap: 2px; flex: 1; min-height: 0; overflow-y: auto; }
-#tools button { width: 42px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; background: transparent; border-color: transparent; color: #d8d8d8; cursor: grab; position: relative; flex: none; }
-#tools button svg { width: 22px; height: 22px; pointer-events: none; }
+#toolbar { grid-area: tools; display: flex; flex-direction: column; padding: 6px 4px; background: #2e2e2e; border-right: 1px solid var(--panel-border); overflow: hidden; position: relative; }
+/* 右端をドラッグして幅を変える */
+#toolbar-resizer { position: absolute; top: 0; right: -4px; width: 10px; height: 100%; cursor: ew-resize; touch-action: none; z-index: 2; }
+#toolbar-resizer:hover, #toolbar-resizer.active { background: rgba(245,197,66,.35); }
+#tools { display: flex; flex-direction: row; flex-wrap: wrap; align-content: flex-start; gap: 2px; flex: 1; min-height: 0; overflow-y: auto; }
+#tools button { width: var(--tool-btn); height: calc(var(--tool-btn) - 6px); padding: 0; display: flex; align-items: center; justify-content: center; background: transparent; border-color: transparent; color: #d8d8d8; cursor: grab; position: relative; flex: none; }
+#tools button svg { width: calc(var(--tool-btn) * .52); height: calc(var(--tool-btn) * .52); pointer-events: none; }
 #tools button:hover { background: #3f3f3f; }
 #tools button.active { background: #505050; border-color: #6a6a6a; color: #fff; }
 #tools button.dragging { opacity: .35; }
@@ -59,7 +64,7 @@ button.active { background: var(--accent); color: #222; border-color: var(--acce
 /* iPad のホームインジケーター領域(画面最下部)を避けて、少し上に置く */
 #sync-buttons { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; margin-top: 6px; border-top: 1px solid var(--panel-border); padding-bottom: 6px; flex: none; }
 #sync-buttons button:active { transform: scale(.94); filter: brightness(1.3); }
-#sync-buttons button { width: 42px; height: 54px; padding: 4px 0 3px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: #fff; border: 1px solid transparent; border-radius: 8px; }
+#sync-buttons button { width: var(--tool-btn); height: 54px; padding: 4px 0 3px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: #fff; border: 1px solid transparent; border-radius: 8px; }
 #sync-buttons button svg { width: 24px; height: 24px; }
 #sync-buttons button .lbl { font-size: 9px; line-height: 1; letter-spacing: -.02em; white-space: nowrap; }
 #sync-buttons button.sync-send { background: #d9822b; }
@@ -71,7 +76,7 @@ button.active { background: var(--accent); color: #222; border-color: var(--acce
 @keyframes pulse { 50% { filter: brightness(1.35); } }
 /* ボスが来た */
 /* 「受け取る」との押し間違いを防ぐため、上に広めの間隔を取り、縦に大きくする */
-#btn-boss { width: 42px; height: 116px; margin-top: 28px; margin-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: #555; color: #fff; border: 1px solid #777; border-radius: 8px; flex: none; }
+#btn-boss { width: var(--tool-btn); height: 116px; margin-top: 28px; margin-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: #555; color: #fff; border: 1px solid #777; border-radius: 8px; flex: none; }
 #btn-boss:hover { background: #666; }
 #btn-boss:active { transform: scale(.96); }
 #btn-boss svg { width: 28px; height: 28px; }
@@ -168,7 +173,5 @@ kbd { background: #222; border-radius: 3px; padding: 0 4px; font-size: 11px; col
 .tab .sdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 @media (max-width: 800px) {
   .lib-body { grid-template-columns: 150px 150px 1fr; }
-  #app { grid-template-columns: 46px 1fr 200px; }
-  #tools button { width: 38px; height: 34px; font-size: 15px; }
-  #sync-buttons button { width: 38px; }
+  #app { grid-template-columns: var(--toolbar-w) 1fr 200px; }
 }
