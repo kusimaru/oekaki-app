@@ -243,8 +243,8 @@ view.addEventListener('pointerdown', ev => {
   if (isEmpty()) return;
   try { view.setPointerCapture(ev.pointerId); } catch { /* 合成イベントなどでは失敗することがある */ }
   // スライダー等にフォーカスが残っていると iPad の Scribble が反応することがあるので外す
-  // キャンバスに焦点を移す(iPad ではページに焦点がないと外付けキー / 左手デバイスのキーが届かない)
-  view.focus({ preventScroll: true });
+  // キー受け取り先に焦点を移す(iPad ではページに焦点がないと外付けキー / 左手デバイスのキーが届かない)
+  focusKeys();
   cursorPos = toDoc(ev);
 
   if (ev.pointerType === 'pen') {
@@ -584,6 +584,28 @@ function keyOf(ev: KeyboardEvent): string {
   if (ev.altKey || !ev.key || ev.key === 'Unidentified') return byCode(ev.code) ?? (ev.key || '').toLowerCase();
   return ev.key.toLowerCase();
 }
+/**
+ * キーの受け取り先。iPad の Safari は文字入力欄に焦点があるときしかハードウェアキーをページに渡さないため、
+ * iPad では見えない入力欄(inputmode=none: ソフトキーボードなし)に焦点を当てておく。PC はキャンバスでよい
+ */
+const keySink = $<HTMLTextAreaElement>('key-sink');
+const USE_KEY_SINK = /iPad|iPhone/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+function focusKeys() {
+  const a = document.activeElement;
+  // 設定欄などで入力中は奪わない
+  const typing = (a instanceof HTMLInputElement && /^(text|password|number|email|search|url|tel)$/.test(a.type)) || a instanceof HTMLSelectElement || (a instanceof HTMLTextAreaElement && a !== keySink);
+  if (typing) return;
+  if (document.querySelector('dialog[open]') || !$('library').hidden) return;
+  if (USE_KEY_SINK) keySink.focus({ preventScroll: true });
+  else view.focus({ preventScroll: true });
+}
+keySink.addEventListener('input', () => { keySink.value = ''; });
+// ボタンなどを押したあとも受け取り先に戻す(入力欄・ダイアログ以外)
+document.addEventListener('pointerup', ev => {
+  const t = ev.target as HTMLElement;
+  if (t.closest('select, textarea, dialog, #library') || (t instanceof HTMLInputElement && /^(text|password|number|email|search|url|tel)$/.test(t.type))) return;
+  setTimeout(focusKeys, 0);
+}, true);
 // キー確認モード: 届いたキーをすべて画面に表示する(左手デバイスの設定確認用)
 let keyMonitor = false;
 window.addEventListener('keydown', ev => {
@@ -593,7 +615,8 @@ window.addEventListener('keydown', ev => {
 }, true);
 window.addEventListener('keydown', ev => {
   const t = ev.target as HTMLElement;
-  if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || t.closest('dialog') || !$('library').hidden) return;
+  if (t !== keySink && (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || t.closest('dialog') || !$('library').hidden)) return;
+  if (t === keySink && !ev.ctrlKey && !ev.metaKey && ev.key.length === 1) ev.preventDefault(); // 入力欄に文字を溜めない
   if (ev.code === 'Space') { spaceDown = true; ev.preventDefault(); return; }
   const k = keyOf(ev);
   const mod = ev.ctrlKey || ev.metaKey;
@@ -1170,7 +1193,7 @@ function renderTabs() {
 $('btn-tab-new').addEventListener('click', () => openNewDialog());
 $<HTMLInputElement>('opt-key-monitor').addEventListener('change', ev => {
   keyMonitor = (ev.target as HTMLInputElement).checked;
-  view.focus({ preventScroll: true });
+  setTimeout(focusKeys, 0);
   setStatus(keyMonitor ? 'キー確認: キャンバスをタップしてから左手デバイスのボタンを押してください' : 'キー確認を終了しました');
 });
 // 画像がないときは、編集・書き出し・同期などのボタンを受け付けない(先に捕まえて止める)
@@ -2145,7 +2168,7 @@ async function boot() {
   if (!restored) activateEmpty(); // 画像が 1 枚もない状態も許可する(自動では作らない)
   applyGhConfig(loadGhConfig());
   afterEdit();
-  view.focus({ preventScroll: true });
+  focusKeys();
   setTimeout(checkForUpdate, 3000);
   await bootSync();
 }

@@ -74,6 +74,8 @@
 
   <main id="viewport">
     <canvas id="view" tabindex="-1"></canvas>
+    <!-- iPad でハードウェアキー(左手デバイスなど)を受け取るための見えない入力欄。inputmode=none でソフトキーボードは出ない -->
+    <textarea id="key-sink" inputmode="none" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-hidden="true" tabindex="-1"></textarea>
     <div id="sync-banner" hidden></div>
     <div id="update-banner" hidden>新しい版があります。<button id="btn-update">今すぐ更新</button></div>
     <div id="empty-state" hidden>
