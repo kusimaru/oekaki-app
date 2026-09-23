@@ -475,7 +475,11 @@ function applyToolbarWidth(w: number) {
   $('btn-sidebar-toggle').addEventListener('click', () => { panels.sidebar = !panels.sidebar; applyPanels(); });
 
   const gap = $<HTMLInputElement>('opt-top-gap');
-  const applyGap = (on: boolean) => { document.documentElement.style.setProperty('--top-gap', on ? '22px' : '0px'); resizeView(); };
+  const applyGap = (on: boolean) => {
+    document.documentElement.style.setProperty('--top-gap', on ? '22px' : '0px');
+    document.documentElement.style.setProperty('--left-gap', on ? '96px' : '0px'); // 左上のウィンドウ操作ボタンを避ける
+    resizeView();
+  };
   gap.checked = localStorage.getItem(TOP_GAP_KEY) === '1';
   applyGap(gap.checked);
   gap.addEventListener('change', () => { localStorage.setItem(TOP_GAP_KEY, gap.checked ? '1' : '0'); applyGap(gap.checked); });

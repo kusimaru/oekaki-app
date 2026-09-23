@@ -13,7 +13,7 @@
 /* hidden 属性を display:flex などの指定より優先させる(ライブラリや同期ボタンの表示切替に使う) */
 [hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; -webkit-user-select: none; user-select: none; }
-:root { --toolbar-w: 52px; --tool-btn: 42px; --top-gap: 0px; --sidebar-w: 240px; }
+:root { --toolbar-w: 52px; --tool-btn: 42px; --top-gap: 0px; --left-gap: 0px; --sidebar-w: 240px; }
 #app {
   display: grid;
   grid-template-columns: var(--toolbar-w) 1fr var(--sidebar-w);
@@ -24,7 +24,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
   padding-top: calc(env(safe-area-inset-top, 0px) + var(--top-gap));
 }
 @supports not (height: 100dvh) { #app { height: 100vh; } }
-#topbar { grid-area: top; display: flex; align-items: center; justify-content: space-between; gap: 4px 8px; padding: 4px 8px; min-height: 44px; background: var(--panel); border-bottom: 1px solid var(--panel-border); flex-wrap: wrap; }
+/* --left-gap: iPad の小さいウィンドウで、左上のウィンドウ操作ボタン(閉じる等)と重ならないための余白 */
+#topbar { grid-area: top; display: flex; align-items: center; justify-content: space-between; gap: 4px 8px; padding: 4px 8px 4px calc(8px + var(--left-gap)); min-height: 44px; background: var(--panel); border-bottom: 1px solid var(--panel-border); flex-wrap: wrap; }
 #topbar .group { display: flex; align-items: center; gap: 4px; white-space: nowrap; flex-wrap: wrap; }
 .sep { width: 1px; height: 22px; background: var(--panel-border); margin: 0 4px; }
 button { background: var(--btn); color: var(--text); border: 1px solid var(--panel-border); border-radius: 6px; padding: 5px 9px; cursor: pointer; font: inherit; touch-action: manipulation; }
