@@ -73,7 +73,7 @@
   </div>
 
   <main id="viewport">
-    <canvas id="view"></canvas>
+    <canvas id="view" tabindex="-1"></canvas>
     <div id="sync-banner" hidden></div>
     <div id="update-banner" hidden>新しい版があります。<button id="btn-update">今すぐ更新</button></div>
     <div id="empty-state" hidden>
@@ -115,6 +115,7 @@
       <div class="row"><label>参照</label><input type="checkbox" id="opt-sample-all"><span style="color:var(--muted)">塗りつぶしで全レイヤーを参照</span></div>
       <div class="row"><label>筆圧</label><input type="checkbox" id="opt-pressure" checked><span style="color:var(--muted)">ペンの筆圧で太さ</span></div>
       <div class="row"><label>指</label><input type="checkbox" id="opt-finger"><span style="color:var(--muted)">指でも描く(OFF: 指はパン)</span></div>
+      <div class="row"><label>キー確認</label><input type="checkbox" id="opt-key-monitor"><span style="color:var(--muted)">届いたキーを表示(左手デバイスの設定確認用)</span></div>
       <div class="row"><label>余白</label><input type="checkbox" id="opt-top-gap"><span style="color:var(--muted)">上と左上に余白(iPad の小さいウィンドウ用: 移動しやすく、左上のシステムボタンを避ける)</span></div>
     </section>
     <section>

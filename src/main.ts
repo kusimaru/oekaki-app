@@ -243,7 +243,8 @@ view.addEventListener('pointerdown', ev => {
   if (isEmpty()) return;
   try { view.setPointerCapture(ev.pointerId); } catch { /* 合成イベントなどでは失敗することがある */ }
   // スライダー等にフォーカスが残っていると iPad の Scribble が反応することがあるので外す
-  if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) document.activeElement.blur();
+  // キャンバスに焦点を移す(iPad ではページに焦点がないと外付けキー / 左手デバイスのキーが届かない)
+  view.focus({ preventScroll: true });
   cursorPos = toDoc(ev);
 
   if (ev.pointerType === 'pen') {
@@ -569,11 +570,32 @@ function zoomCenter(factor: number) {
   const r = view.getBoundingClientRect();
   zoomAt(r.left + r.width / 2, r.top + r.height / 2, factor);
 }
+/**
+ * 押されたキーを小文字で返す。Option(Alt)を押すと ev.key が「ß」「‘」などの別の文字になるため、
+ * Alt 併用時や不明なキーのときは物理キー(ev.code)から求める
+ */
+function keyOf(ev: KeyboardEvent): string {
+  const byCode = (c: string): string | null => {
+    let m = /^Key([A-Z])$/.exec(c); if (m) return m[1].toLowerCase();
+    m = /^Digit(\d)$/.exec(c); if (m) return m[1];
+    const map: Record<string, string> = { BracketLeft: '[', BracketRight: ']', Slash: '/', Minus: '-', Equal: '=', Semicolon: ';', Enter: 'enter', Escape: 'escape', Delete: 'delete', Backspace: 'backspace', PageUp: 'pageup', PageDown: 'pagedown' };
+    return map[c] ?? null;
+  };
+  if (ev.altKey || !ev.key || ev.key === 'Unidentified') return byCode(ev.code) ?? (ev.key || '').toLowerCase();
+  return ev.key.toLowerCase();
+}
+// キー確認モード: 届いたキーをすべて画面に表示する(左手デバイスの設定確認用)
+let keyMonitor = false;
+window.addEventListener('keydown', ev => {
+  if (!keyMonitor) return;
+  const mods = [ev.ctrlKey && 'Ctrl', ev.metaKey && 'Cmd', ev.altKey && 'Option/Alt', ev.shiftKey && 'Shift'].filter(Boolean).join('+');
+  setStatus(`キー受信: ${mods ? mods + '+' : ''}${keyOf(ev)}  (key="${ev.key}" code="${ev.code}")`, 'ok');
+}, true);
 window.addEventListener('keydown', ev => {
   const t = ev.target as HTMLElement;
   if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || t.closest('dialog') || !$('library').hidden) return;
   if (ev.code === 'Space') { spaceDown = true; ev.preventDefault(); return; }
-  const k = ev.key.toLowerCase();
+  const k = keyOf(ev);
   const mod = ev.ctrlKey || ev.metaKey;
   if (isEmpty()) {
     // 画像がないときは、新規 / ライブラリ / タブ切替だけ受け付ける
@@ -1146,6 +1168,11 @@ function renderTabs() {
   el.querySelector('.tab.active')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
 }
 $('btn-tab-new').addEventListener('click', () => openNewDialog());
+$<HTMLInputElement>('opt-key-monitor').addEventListener('change', ev => {
+  keyMonitor = (ev.target as HTMLInputElement).checked;
+  view.focus({ preventScroll: true });
+  setStatus(keyMonitor ? 'キー確認: キャンバスをタップしてから左手デバイスのボタンを押してください' : 'キー確認を終了しました');
+});
 // 画像がないときは、編集・書き出し・同期などのボタンを受け付けない(先に捕まえて止める)
 const EMPTY_BLOCKED = new Set(['btn-save', 'btn-png', 'btn-psd', 'btn-svg', 'btn-yohaku', 'btn-undo', 'btn-redo', 'btn-zoom-in', 'btn-zoom-out', 'btn-zoom-fit',
   'btn-send', 'btn-receive', 'btn-cut', 'btn-copy', 'btn-paste', 'btn-delete', 'btn-select-all', 'btn-deselect', 'btn-commit', 'btn-add-color',
@@ -2118,6 +2145,7 @@ async function boot() {
   if (!restored) activateEmpty(); // 画像が 1 枚もない状態も許可する(自動では作らない)
   applyGhConfig(loadGhConfig());
   afterEdit();
+  view.focus({ preventScroll: true });
   setTimeout(checkForUpdate, 3000);
   await bootSync();
 }
