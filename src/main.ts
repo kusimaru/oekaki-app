@@ -63,6 +63,12 @@ interface Tab {
 let tabs: Tab[] = [];
 let cur!: Tab;
 const openTabs = () => tabs.filter(t => t.open);
+/** 開いている画像がないときのダミー(ライブラリには含めない)。cur === EMPTY で「空」を判定する */
+const EMPTY: Tab = {
+  id: '__empty__', name: '', notebook: '', section: '', open: false, doc: createDoc('bitmap', 1, 1), thumb: null,
+  history: new History(), zoom: 1, panX: 0, panY: 0, toolState: null, selectedLayerIds: new Set(), sync: newSyncState(),
+};
+const isEmpty = () => cur === EMPTY;
 const tabDir = (t: Tab) => canvasDir(t.notebook, t.section, t.name);
 
 /** 画像のない(空の)ノートブック / セクションを覚えておく */
@@ -135,6 +141,8 @@ function draw() {
   const dpr = devicePixelRatio || 1;
   vctx.setTransform(1, 0, 0, 1, 0, 0);
   vctx.clearRect(0, 0, view.width, view.height);
+  $('empty-state').hidden = !isEmpty();
+  if (isEmpty()) return;
   vctx.setTransform(dpr * zoom, 0, 0, dpr * zoom, panX * dpr, panY * dpr);
   vctx.imageSmoothingEnabled = zoom < 2;
   vctx.save();
@@ -232,6 +240,7 @@ function startPointer(ev: PointerEvent) {
 }
 
 view.addEventListener('pointerdown', ev => {
+  if (isEmpty()) return;
   try { view.setPointerCapture(ev.pointerId); } catch { /* 合成イベントなどでは失敗することがある */ }
   // スライダー等にフォーカスが残っていると iPad の Scribble が反応することがあるので外す
   if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) document.activeElement.blur();
@@ -566,6 +575,12 @@ window.addEventListener('keydown', ev => {
   if (ev.code === 'Space') { spaceDown = true; ev.preventDefault(); return; }
   const k = ev.key.toLowerCase();
   const mod = ev.ctrlKey || ev.metaKey;
+  if (isEmpty()) {
+    // 画像がないときは、新規 / ライブラリ / タブ切替だけ受け付ける
+    if (mod && k === 'n' && !ev.shiftKey) { openNewDialog(); ev.preventDefault(); }
+    else if (mod && ev.shiftKey && k === 'l') { openLibrary(); ev.preventDefault(); }
+    return;
+  }
   if (mod) {
     let handled = true;
     switch (k) {
@@ -808,9 +823,10 @@ function mergeSelectedLayers() {
 }
 
 function renderLayers() {
-  syncLayerSelection();
   const el = $('layers');
   el.innerHTML = '';
+  if (isEmpty()) { $('doc-info').textContent = ''; return; }
+  syncLayerSelection();
   $('btn-layer-multi').classList.toggle('active', multiSelectMode);
   for (const l of [...doc.layers].reverse()) {
     const row = document.createElement('div');
@@ -957,17 +973,30 @@ function createTab(d: Doc | null, name: string, notebook: string, section: strin
 }
 /** 現在のタブに、表示状態を書き戻す */
 function stashCurrentTab() {
-  if (!cur) return;
+  if (!cur || isEmpty()) return;
   tools.commitTransform();
   flushAutosave();
   cur.zoom = zoom; cur.panX = panX; cur.panY = panY;
   cur.selectedLayerIds = selectedLayerIds;
   cur.toolState = tools.getState();
 }
+/** 開いている画像がない状態にする */
+function activateEmpty() {
+  tools.reset();
+  cur = EMPTY;
+  doc = EMPTY.doc!;
+  history = EMPTY.history;
+  selectedLayerIds = new Set();
+  renderPalette();
+  renderLayers();
+  renderTabs();
+  updateSyncStatus();
+  afterEdit();
+}
 function activateTab(tab: Tab) {
   if (!tab.doc) return;
   cur = tab;
-  tab.open = true;
+  tab.open = tab !== EMPTY;
   doc = tab.doc;
   history = tab.history;
   selectedLayerIds = tab.selectedLayerIds;
@@ -1017,28 +1046,27 @@ function cycleTab(dir: 1 | -1) {
   const i = list.indexOf(cur);
   switchTab(list[(i + dir + list.length) % list.length].id);
 }
-/** タブを閉じる(画像はライブラリに残る) */
+/** タブを閉じる(画像はライブラリに残る)。最後の 1 枚を閉じると「画像なし」の状態になる */
 function closeTab(id: string) {
   const tab = tabs.find(t => t.id === id);
   if (!tab || !tab.open) return;
   const list = openTabs();
-  if (list.length <= 1) { setStatus('最後の画像は閉じられません。ライブラリから別の画像を開いてから閉じてください'); return; }
   if (tab === cur) stashCurrentTab();
   tab.open = false;
   tab.doc = null; // メモリを解放。端末内の保存から再読み込みできる
   tab.history.clear();
   if (tab === cur) {
+    const rest = list.filter(t => t !== tab);
     const idx = list.indexOf(tab);
-    const next = list.filter(t => t !== tab)[Math.min(idx, list.length - 2)];
     cur = undefined as unknown as Tab;
-    activateTab(next);
+    if (rest.length) activateTab(rest[Math.min(idx, rest.length - 1)]);
+    else activateEmpty();
   } else renderTabs();
   saveTabIndex();
 }
 /** 画像をライブラリから完全に削除する(端末内と GitHub の両方) */
 async function deleteCanvas(tab: Tab) {
   if (!confirm(`「${tab.name}」を削除します。端末内と GitHub の両方から消えます。よろしいですか?`)) return;
-  if (tab.open && openTabs().length <= 1) { addTab(createDoc('bitmap', 1024, 768), 'drawing1', tab.notebook, tab.section); }
   if (tab.open) closeTab(tab.id);
   tabs = tabs.filter(t => t !== tab);
   await dbDelete(tabKey(tab.id)).catch(() => {});
@@ -1118,6 +1146,20 @@ function renderTabs() {
   el.querySelector('.tab.active')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
 }
 $('btn-tab-new').addEventListener('click', () => openNewDialog());
+// 画像がないときは、編集・書き出し・同期などのボタンを受け付けない(先に捕まえて止める)
+const EMPTY_BLOCKED = new Set(['btn-save', 'btn-png', 'btn-psd', 'btn-svg', 'btn-yohaku', 'btn-undo', 'btn-redo', 'btn-zoom-in', 'btn-zoom-out', 'btn-zoom-fit',
+  'btn-send', 'btn-receive', 'btn-cut', 'btn-copy', 'btn-paste', 'btn-delete', 'btn-select-all', 'btn-deselect', 'btn-commit', 'btn-add-color',
+  'btn-layer-add', 'btn-layer-del', 'btn-layer-up', 'btn-layer-down', 'btn-layer-rename', 'btn-layer-multi', 'btn-layer-merge']);
+document.addEventListener('click', ev => {
+  const b = (ev.target as HTMLElement).closest?.('button');
+  if (b && isEmpty() && EMPTY_BLOCKED.has(b.id)) {
+    ev.stopImmediatePropagation();
+    ev.preventDefault();
+    setStatus('画像を開いていません。「新規」で作るか、「ライブラリ」から開いてください');
+  }
+}, true);
+$('empty-new').addEventListener('click', () => openNewDialog());
+$('empty-library').addEventListener('click', openLibrary);
 
 // ---------------- ボスが来た(緊急で画面を隠す) ----------------
 let bossHidden = false;
@@ -1174,8 +1216,8 @@ const countIn = (notebook: string, section?: string) =>
 
 function openLibrary() {
   stashCurrentTab();
-  libNotebook = cur?.notebook ?? DEFAULT_NOTEBOOK;
-  libSection = cur?.section ?? DEFAULT_SECTION;
+  libNotebook = cur?.notebook || DEFAULT_NOTEBOOK;
+  libSection = cur?.section || DEFAULT_SECTION;
   $('library').hidden = false;
   renderLibrary();
   if (sync.gh) scanRemote();
@@ -1372,12 +1414,7 @@ async function deleteSection(nb: string, sec: string) {
 async function removeCanvases(pred: (t: Tab) => boolean) {
   const victims = tabs.filter(pred);
   if (!victims.length) return;
-  if (openTabs().every(t => pred(t))) {
-    const keep = tabs.find(t => !pred(t) && t.doc) ?? null;
-    if (keep) { await openTab(keep); }
-    else addTab(createDoc('bitmap', 1024, 768), 'drawing1', DEFAULT_NOTEBOOK, DEFAULT_SECTION);
-  }
-  for (const t of victims) { if (t.open) { if (openTabs().length > 1) closeTab(t.id); } }
+  for (const t of victims) if (t.open) closeTab(t.id);
   tabs = tabs.filter(t => !pred(t));
   for (const t of victims) await dbDelete(tabKey(t.id)).catch(() => {});
   saveTabIndex();
@@ -1478,8 +1515,8 @@ $('move-ok').addEventListener('click', () => {
 // ---------------- ドキュメント ----------------
 const dlgNew = $<HTMLDialogElement>('dlg-new');
 function openNewDialog(notebook?: string, section?: string) {
-  const nb = notebook ?? cur?.notebook ?? DEFAULT_NOTEBOOK;
-  const sec = section ?? cur?.section ?? DEFAULT_SECTION;
+  const nb = notebook ?? (cur?.notebook || DEFAULT_NOTEBOOK);
+  const sec = section ?? (cur?.section || DEFAULT_SECTION);
   $<HTMLInputElement>('new-notebook').value = nb;
   $<HTMLInputElement>('new-section').value = sec;
   fillDatalists();
@@ -1518,7 +1555,7 @@ async function openFile(f: File) {
     else if (PSD_EXT.test(f.name)) d = await importPsd(f);
     else if (IMAGE_EXT.test(f.name) || f.type.startsWith('image/')) d = await importImage(f);
     else throw new Error('対応していないファイル形式です(JSON / PNG / JPEG / WebP / GIF / BMP / SVG / PSD)');
-    const tab = addTab(d, name, cur?.notebook ?? DEFAULT_NOTEBOOK, cur?.section ?? DEFAULT_SECTION);
+    const tab = addTab(d, name, cur?.notebook || DEFAULT_NOTEBOOK, cur?.section || DEFAULT_SECTION);
     tab.sync.dirty = true;
     saveTab(tab);
     saveTabIndex();
@@ -1647,7 +1684,7 @@ function saveTabIndex() {
   dbPut(TAB_INDEX_KEY, { activeId: cur?.id, tabs: entries }).catch(() => {});
 }
 async function saveTab(tab: Tab) {
-  if (!tab.doc) return;
+  if (!tab.doc || tab === EMPTY) return;
   try {
     const { manifest } = await serialize(tab === cur ? tools.docForSave() : tab.doc, 'embed');
     await dbPut(tabKey(tab.id), { name: tab.name, manifest });
@@ -1784,6 +1821,7 @@ function updateSyncStatus() {
   }
   buttons.hidden = false;
   if (!cur) return;
+  if (isEmpty()) { const el = $('sync-status'); el.textContent = '画像を開いていません'; el.className = ''; return; }
   const s = cur.sync;
   const send = $('btn-send'), recv = $('btn-receive');
   const both = s.conflict || (s.dirty && s.remoteChanged);
@@ -2077,7 +2115,7 @@ async function boot() {
   setTool('pen');
   renderPalette();
   const restored = await restoreTabs();
-  if (!restored) addTab(createDoc('bitmap', 1024, 768), 'drawing1', DEFAULT_NOTEBOOK, DEFAULT_SECTION);
+  if (!restored) activateEmpty(); // 画像が 1 枚もない状態も許可する(自動では作らない)
   applyGhConfig(loadGhConfig());
   afterEdit();
   setTimeout(checkForUpdate, 3000);
