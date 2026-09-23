@@ -83,7 +83,8 @@ button.active { background: var(--accent); color: #222; border-color: var(--acce
 #btn-boss .lbl { font-size: 11px; line-height: 1; }
 #sync-buttons[hidden] + #btn-boss { margin-top: auto; }
 #boss-screen { position: fixed; inset: 0; z-index: 1000; background: #000; }
-#btn-boss-restore { position: absolute; left: 4px; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); width: 42px; height: 116px; background: #111; border: 1px solid #222; border-radius: 8px; }
+/* 暗転中の戻すボタン: ツールバーの「ボス」ボタンと同じ位置・同じ大きさ(ツールバーの幅に追従) */
+#btn-boss-restore { position: absolute; left: 4px; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); width: calc(var(--toolbar-w) - 8px); min-width: 28px; height: 116px; background: #111; border: 1px solid #222; border-radius: 8px; }
 #btn-boss-restore:hover { background: #1a1a1a; }
 .layer .lock { border: none; background: transparent; padding: 0 2px; font-size: 13px; line-height: 1; opacity: .35; }
 .layer .lock.on { opacity: 1; }
