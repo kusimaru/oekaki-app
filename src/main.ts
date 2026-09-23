@@ -431,6 +431,49 @@ function applyToolbarWidth(w: number) {
     resizer.addEventListener('pointerup', onUp);
     resizer.addEventListener('pointercancel', onUp);
   });
+  // 右パネルの幅(左端をドラッグ)
+  const SIDEBAR_W_KEY = 'oekaki.sidebarWidth';
+  const applySidebarWidth = (w: number) => {
+    w = Math.round(Math.max(160, Math.min(420, w)));
+    document.documentElement.style.setProperty('--sidebar-w', `${w}px`);
+    return w;
+  };
+  const savedSide = Number(localStorage.getItem(SIDEBAR_W_KEY));
+  applySidebarWidth(savedSide > 0 ? savedSide : 240);
+  const sres = $('sidebar-resizer');
+  sres.addEventListener('pointerdown', ev => {
+    ev.preventDefault();
+    try { sres.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
+    sres.classList.add('active');
+    const right = $('sidebar').getBoundingClientRect().right;
+    let w = 240;
+    const onMove = (e: PointerEvent) => { w = applySidebarWidth(right - e.clientX); resizeView(); };
+    const onUp = () => {
+      sres.removeEventListener('pointermove', onMove);
+      sres.removeEventListener('pointerup', onUp);
+      sres.removeEventListener('pointercancel', onUp);
+      sres.classList.remove('active');
+      localStorage.setItem(SIDEBAR_W_KEY, String(w));
+    };
+    sres.addEventListener('pointermove', onMove);
+    sres.addEventListener('pointerup', onUp);
+    sres.addEventListener('pointercancel', onUp);
+  });
+  // たたむ / 開く(状態は保存)
+  const PANELS_KEY = 'oekaki.panels';
+  const panels = { toolbar: false, sidebar: false, ...(JSON.parse(localStorage.getItem(PANELS_KEY) || '{}') as Partial<{ toolbar: boolean; sidebar: boolean }>) };
+  const applyPanels = () => {
+    document.body.classList.toggle('toolbar-hidden', panels.toolbar);
+    document.body.classList.toggle('sidebar-hidden', panels.sidebar);
+    $('btn-toolbar-toggle').textContent = panels.toolbar ? '›' : '‹';
+    $('btn-sidebar-toggle').textContent = panels.sidebar ? '‹' : '›';
+    localStorage.setItem(PANELS_KEY, JSON.stringify(panels));
+    resizeView();
+  };
+  applyPanels();
+  $('btn-toolbar-toggle').addEventListener('click', () => { panels.toolbar = !panels.toolbar; applyPanels(); });
+  $('btn-sidebar-toggle').addEventListener('click', () => { panels.sidebar = !panels.sidebar; applyPanels(); });
+
   const gap = $<HTMLInputElement>('opt-top-gap');
   const applyGap = (on: boolean) => { document.documentElement.style.setProperty('--top-gap', on ? '22px' : '0px'); resizeView(); };
   gap.checked = localStorage.getItem(TOP_GAP_KEY) === '1';
