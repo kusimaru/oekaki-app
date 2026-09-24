@@ -616,8 +616,20 @@ let keyMonitor = false;
 window.addEventListener('keydown', ev => {
   if (!keyMonitor) return;
   const mods = [ev.ctrlKey && 'Ctrl', ev.metaKey && 'Cmd', ev.altKey && 'Option/Alt', ev.shiftKey && 'Shift'].filter(Boolean).join('+');
-  setStatus(`キー受信: ${mods ? mods + '+' : ''}${keyOf(ev)}  (key="${ev.key}" code="${ev.code}")`, 'ok');
+  keyLog.unshift(`押す ${mods ? mods + '+' : ''}${keyLabel(ev)} (key="${ev.key}" code="${ev.code}"${ev.repeat ? ' 連続' : ''})`);
+  showKeyLog();
 }, true);
+window.addEventListener('keyup', ev => {
+  if (!keyMonitor) return;
+  keyLog.unshift(`離す ${keyLabel(ev)} (key="${ev.key}" code="${ev.code}")`);
+  showKeyLog();
+}, true);
+const keyLog: string[] = [];
+const keyLabel = (ev: KeyboardEvent) => (keyOf(ev) === ' ' ? 'Space' : keyOf(ev));
+function showKeyLog() {
+  keyLog.length = Math.min(keyLog.length, 4);
+  setStatus(`[版 ${__BUILD_ID__.slice(5, 16).replace('T', ' ')}] ` + keyLog.join(' / '), 'ok');
+}
 window.addEventListener('keydown', ev => {
   const t = ev.target as HTMLElement;
   if (t !== keySink && (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || t.closest('dialog') || !$('library').hidden)) return;
@@ -672,6 +684,12 @@ window.addEventListener('keydown', ev => {
     ev.preventDefault();
     return;
   }
+  // H: 手のひら。手のひらのときにもう一度押すと元のツールに戻る(左手デバイスで Space の代わりに使える)
+  if (k === 'h') {
+    if (tools.tool === 'hand' && handPrevTool) { const back = handPrevTool; handPrevTool = null; setTool(back); if (!keyMonitor) setStatus('手のひらを終了しました'); }
+    else if (tools.tool !== 'hand') { handPrevTool = tools.tool; setTool('hand'); if (!keyMonitor) setStatus('手のひら(もう一度 H で元のツールに戻る)'); }
+    return;
+  }
   if (KEY_TOOLS[k]) { setTool(KEY_TOOLS[k]); return; }
   if (k === 'u') {                                               // 図形ツールを切り替え
     const i = SHAPE_CYCLE.indexOf(tools.tool);
@@ -691,6 +709,8 @@ window.addEventListener('keydown', ev => {
  * 手のひらに切り替えたままにし、もう一度 Space で元のツールに戻す
  */
 let spaceLatchPrev: ToolId | null = null;
+/** H で手のひらにしたときの元のツール */
+let handPrevTool: ToolId | null = null;
 window.addEventListener('keyup', ev => {
   if (ev.code !== 'Space' && ev.key !== ' ') return;
   if (!spaceDown) return;
@@ -701,11 +721,11 @@ window.addEventListener('keyup', ev => {
     const back = spaceLatchPrev;
     spaceLatchPrev = null;
     setTool(back);
-    setStatus('手のひらを終了しました');
+    if (!keyMonitor) setStatus('手のひらを終了しました');
   } else if (tools.tool !== 'hand') {
     spaceLatchPrev = tools.tool;
     setTool('hand');
-    setStatus('手のひら(もう一度 Space で元のツールに戻る)');
+    if (!keyMonitor) setStatus('手のひら(もう一度 Space で元のツールに戻る)');
   }
 });
 
