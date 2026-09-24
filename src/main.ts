@@ -202,6 +202,9 @@ let panId: number | null = null;
 let panStart = { x: 0, y: 0, px: 0, py: 0 };
 let pinchStart = { dist: 1, zoom: 1, docX: 0, docY: 0 };
 let spaceDown = false;
+let spaceDownAt = 0;
+/** Space を押している間にパンなどの操作をしたか(したら「押している間だけ」の使い方とみなす) */
+let spaceUsed = false;
 
 function pinchInfo() {
   const [a, b] = [...touchPts.values()];
@@ -231,6 +234,7 @@ function startPointer(ev: PointerEvent) {
     zoomAt(ev.clientX, ev.clientY, ev.altKey ? 0.8 : 1.25);
     return;
   }
+  if (spaceDown) spaceUsed = true;
   if (tools.tool === 'hand' || spaceDown || ev.button === 1) { startPan(ev); return; }
   if (ev.button !== 0) return;
   mode = 'draw';
@@ -500,6 +504,7 @@ const CURSORS: Partial<Record<ToolId, string>> = {
   zoom: 'zoom-in', pen: 'none', eraser: 'none',
 };
 function setTool(t: ToolId) {
+  if (t !== 'hand') spaceLatchPrev = null; // 別のツールを選んだら Space の切り替え状態を解除
   tools.setTool(t);
   document.querySelectorAll<HTMLButtonElement>('#tools button').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
   view.style.cursor = CURSORS[t] ?? 'crosshair';
@@ -617,7 +622,11 @@ window.addEventListener('keydown', ev => {
   const t = ev.target as HTMLElement;
   if (t !== keySink && (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || t.closest('dialog') || !$('library').hidden)) return;
   if (t === keySink && !ev.ctrlKey && !ev.metaKey && ev.key.length === 1) ev.preventDefault(); // 入力欄に文字を溜めない
-  if (ev.code === 'Space') { spaceDown = true; ev.preventDefault(); return; }
+  if (ev.code === 'Space' || ev.key === ' ') {
+    ev.preventDefault();
+    if (!ev.repeat && !spaceDown) { spaceDown = true; spaceDownAt = Date.now(); spaceUsed = false; }
+    return;
+  }
   const k = keyOf(ev);
   const mod = ev.ctrlKey || ev.metaKey;
   if (isEmpty()) {
@@ -676,7 +685,29 @@ window.addEventListener('keydown', ev => {
   else if (k === 'escape') { tools.escape(); afterEdit(); }
   else if (k === 'delete' || k === 'backspace') { tools.deleteSelection(); afterEdit(); }
 });
-window.addEventListener('keyup', ev => { if (ev.code === 'Space') spaceDown = false; });
+/**
+ * Space: 押している間だけ手のひら(Photoshop と同じ)。
+ * 左手デバイスは押す / 離すを一瞬で送ることがあるので、短く押して離した(その間に操作がなかった)ときは
+ * 手のひらに切り替えたままにし、もう一度 Space で元のツールに戻す
+ */
+let spaceLatchPrev: ToolId | null = null;
+window.addEventListener('keyup', ev => {
+  if (ev.code !== 'Space' && ev.key !== ' ') return;
+  if (!spaceDown) return;
+  spaceDown = false;
+  const quick = Date.now() - spaceDownAt < 350 && !spaceUsed;
+  if (!quick) return;
+  if (spaceLatchPrev) {
+    const back = spaceLatchPrev;
+    spaceLatchPrev = null;
+    setTool(back);
+    setStatus('手のひらを終了しました');
+  } else if (tools.tool !== 'hand') {
+    spaceLatchPrev = tools.tool;
+    setTool('hand');
+    setStatus('手のひら(もう一度 Space で元のツールに戻る)');
+  }
+});
 
 function undo() { tools.cancel(); tools.commitTransform(); if (history.undo(doc)) { markDirty(); afterEdit(); } }
 function redo() { tools.cancel(); tools.commitTransform(); if (history.redo(doc)) { markDirty(); afterEdit(); } }
