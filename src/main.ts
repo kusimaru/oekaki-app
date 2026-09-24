@@ -202,6 +202,8 @@ let panId: number | null = null;
 let panStart = { x: 0, y: 0, px: 0, py: 0 };
 let pinchStart = { dist: 1, zoom: 1, docX: 0, docY: 0 };
 let spaceDown = false;
+/** H を押している最中か / 押した時刻 / 押している間にパンしたか */
+let hHeld = false, hDownAt = 0, hUsed = false;
 let spaceDownAt = 0;
 /** Space を押している間にパンなどの操作をしたか(したら「押している間だけ」の使い方とみなす) */
 let spaceUsed = false;
@@ -235,6 +237,7 @@ function startPointer(ev: PointerEvent) {
     return;
   }
   if (spaceDown) spaceUsed = true;
+  if (hHeld) hUsed = true;
   if (tools.tool === 'hand' || spaceDown || ev.button === 1) { startPan(ev); return; }
   if (ev.button !== 0) return;
   mode = 'draw';
@@ -685,9 +688,15 @@ window.addEventListener('keydown', ev => {
     return;
   }
   // H: 手のひら。手のひらのときにもう一度押すと元のツールに戻る(左手デバイスで Space の代わりに使える)
+  // H: 押している間だけ手のひら(離すと元のツール)。短く押して離したときは手のひらのまま(Photoshop と同じ)
   if (k === 'h') {
-    if (tools.tool === 'hand' && handPrevTool) { const back = handPrevTool; handPrevTool = null; setTool(back); if (!keyMonitor) setStatus('手のひらを終了しました'); }
-    else if (tools.tool !== 'hand') { handPrevTool = tools.tool; setTool('hand'); if (!keyMonitor) setStatus('手のひら(もう一度 H で元のツールに戻る)'); }
+    if (ev.repeat || hHeld) return;
+    if (tools.tool === 'hand' && handPrevTool) { const back = handPrevTool; handPrevTool = null; setTool(back); if (!keyMonitor) setStatus('手のひらを終了しました'); return; }
+    if (tools.tool !== 'hand') {
+      hHeld = true; hDownAt = Date.now(); hUsed = false;
+      handPrevTool = tools.tool;
+      setTool('hand');
+    }
     return;
   }
   if (KEY_TOOLS[k]) { setTool(KEY_TOOLS[k]); return; }
@@ -711,6 +720,14 @@ window.addEventListener('keydown', ev => {
 let spaceLatchPrev: ToolId | null = null;
 /** H で手のひらにしたときの元のツール */
 let handPrevTool: ToolId | null = null;
+window.addEventListener('keyup', ev => {
+  if (keyOf(ev) !== 'h' || !hHeld) return;
+  hHeld = false;
+  const held = Date.now() - hDownAt >= 300 || hUsed;
+  if (held && handPrevTool && tools.tool === 'hand') {
+    const back = handPrevTool; handPrevTool = null; setTool(back);   // 押している間だけ → 元に戻す
+  } else if (!keyMonitor) setStatus('手のひら(H を押している間だけ使う場合は長押し。もう一度 H で元のツールに戻る)');
+});
 window.addEventListener('keyup', ev => {
   if (ev.code !== 'Space' && ev.key !== ' ') return;
   if (!spaceDown) return;
