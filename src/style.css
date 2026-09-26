@@ -76,6 +76,8 @@ button.active { background: var(--accent); color: #222; border-color: var(--acce
 #sync-buttons button.sync-receive { background: #2f6fd6; }
 #sync-buttons button.sync-receive:hover { background: #3f84f0; }
 #sync-buttons button:disabled { opacity: .55; }
+/* GitHub 未設定: 薄く表示(押すと設定画面が開く) */
+#sync-buttons.unconfigured button { opacity: .45; filter: grayscale(.6); }
 #sync-buttons button.attention { box-shadow: 0 0 0 2px var(--accent); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { filter: brightness(1.35); } }
 /* ボスが来た */

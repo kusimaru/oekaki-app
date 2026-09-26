@@ -506,8 +506,22 @@ const CURSORS: Partial<Record<ToolId, string>> = {
   hand: 'grab', move: 'move', eyedropper: 'copy', bucket: 'cell', select: 'crosshair', lasso: 'crosshair',
   zoom: 'zoom-in', pen: 'none', eraser: 'none',
 };
+/** 太さはペン(図形・直線も共通)と消しゴムで別々に記憶する */
+const SIZES_KEY = 'oekaki.sizes';
+const sizeSlot = (t: ToolId) => (t === 'eraser' ? 'eraser' : 'pen');
+const toolSizes: Record<'pen' | 'eraser', number> = { pen: 6, eraser: 20, ...(JSON.parse(localStorage.getItem(SIZES_KEY) || '{}')) };
+function rememberSize() {
+  toolSizes[sizeSlot(tools.tool)] = options.size;
+  localStorage.setItem(SIZES_KEY, JSON.stringify(toolSizes));
+}
 function setTool(t: ToolId) {
   if (t !== 'hand') spaceLatchPrev = null; // 別のツールを選んだら Space の切り替え状態を解除
+  const slot = sizeSlot(t);
+  if (slot !== sizeSlot(tools.tool) || options.size !== toolSizes[slot]) {
+    options.size = toolSizes[slot];
+    $<HTMLInputElement>('opt-size').value = String(options.size);
+    $('opt-size-label').textContent = String(options.size);
+  }
   tools.setTool(t);
   document.querySelectorAll<HTMLButtonElement>('#tools button').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
   view.style.cursor = CURSORS[t] ?? 'crosshair';
@@ -520,6 +534,7 @@ function setBrushSize(n: number) {
   options.size = Math.max(1, Math.min(100, Math.round(n)));
   $<HTMLInputElement>('opt-size').value = String(options.size);
   $('opt-size-label').textContent = String(options.size);
+  rememberSize();
   requestRender();
 }
 const brushStep = (s: number) => (s < 10 ? 1 : s < 50 ? 5 : 10);
@@ -807,7 +822,7 @@ function renderPalette() {
 const bindRange = (id: string, key: 'size' | 'tolerance') => {
   const input = $<HTMLInputElement>(id);
   input.value = String(options[key]);
-  input.addEventListener('input', () => { options[key] = Number(input.value); $(`${id}-label`).textContent = input.value; requestRender(); });
+  input.addEventListener('input', () => { options[key] = Number(input.value); $(`${id}-label`).textContent = input.value; if (key === 'size') rememberSize(); requestRender(); });
 };
 bindRange('opt-size', 'size');
 bindRange('opt-tolerance', 'tolerance');
@@ -1270,7 +1285,8 @@ const EMPTY_BLOCKED = new Set(['btn-save', 'btn-png', 'btn-psd', 'btn-svg', 'btn
   'btn-layer-add', 'btn-layer-del', 'btn-layer-up', 'btn-layer-down', 'btn-layer-rename', 'btn-layer-multi', 'btn-layer-merge']);
 document.addEventListener('click', ev => {
   const b = (ev.target as HTMLElement).closest?.('button');
-  if (b && isEmpty() && EMPTY_BLOCKED.has(b.id)) {
+  const openSettingsInstead = (b?.id === 'btn-send' || b?.id === 'btn-receive') && !sync.gh; // 未設定なら設定画面を開く方を優先
+  if (b && isEmpty() && EMPTY_BLOCKED.has(b.id) && !openSettingsInstead) {
     ev.stopImmediatePropagation();
     ev.preventDefault();
     setStatus('画像を開いていません。「新規」で作るか、「ライブラリ」から開いてください');
@@ -1934,10 +1950,12 @@ function updateSyncStatus() {
     const el = $('sync-status');
     el.textContent = 'GitHub: 未設定(右上の GitHub から設定)';
     el.className = '';
-    buttons.hidden = true;
+    buttons.hidden = false;
+    buttons.classList.add('unconfigured');
     return;
   }
   buttons.hidden = false;
+  buttons.classList.remove('unconfigured');
   if (!cur) return;
   if (isEmpty()) { const el = $('sync-status'); el.textContent = '画像を開いていません'; el.className = ''; return; }
   const s = cur.sync;
@@ -2123,6 +2141,15 @@ setInterval(autoSyncTick, 10_000);
 setInterval(() => { if (sync.gh) updateSyncStatus(); }, 60_000); // 「n 分前」の表示更新
 document.addEventListener('visibilitychange', () => { if (!document.hidden) autoSyncTick(); });
 
+// GitHub 未設定のときは、送る / 受け取るを押すと設定画面を開く(ほかの処理より先に捕まえる)
+for (const id of ['btn-send', 'btn-receive']) {
+  $(id).addEventListener('click', ev => {
+    if (sync.gh) return;
+    ev.stopImmediatePropagation();
+    setStatus('この端末ではまだ GitHub が設定されていません。設定すると「送る / 受け取る」が使えます');
+    $('btn-github').click();
+  }, true);
+}
 $('btn-send').addEventListener('click', async () => {
   cur.sync.conflict = false;
   await push(cur, true, true);
